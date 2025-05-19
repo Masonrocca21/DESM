@@ -18,6 +18,12 @@ public class DummyPlants {
         return this.ID;
     }
 
+    String getAddress(){ return this.address; }
+
+    int getPortNumber(){
+        return this.portNumber;
+    }
+
     String getInformation(){
         return this.information;
     }

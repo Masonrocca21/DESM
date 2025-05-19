@@ -15,9 +15,10 @@ public class Administrator {
     private HashMap<Integer, String> informations = new HashMap<>();
 
 
-    public int addThermalPlants(DummyPlants dummyPlants) {
+    public int addThermalPlants(int ID, String address, int port) {
         synchronized (this) {
-            if (!ThermalPlants.contains(dummyPlants)) {
+            DummyPlants dummyPlants = new DummyPlants(ID, address, port);
+            if (ThermalPlants.contains(dummyPlants)) {
                 System.out.println("Adding ThermalPlants " + dummyPlants + " not possible because already there");
                 return -1;
             }

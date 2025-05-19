@@ -17,7 +17,7 @@ public class AdministratorController {
 
     @PostMapping(value = "/add", consumes = {"application/json", "application/xml"})
     public ResponseEntity<Void> addThermalPlants(@RequestBody DummyPlants dummyPlants) {
-        int result = administrator.addThermalPlants(dummyPlants);
+        int result = administrator.addThermalPlants(dummyPlants.getID(), dummyPlants.getAddress(), dummyPlants.getPortNumber());
         if (result == -1) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         } else {
