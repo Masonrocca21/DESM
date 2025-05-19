@@ -3,6 +3,7 @@ package server;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Objects;
 
 
 import org.springframework.stereotype.Service;
@@ -18,7 +19,7 @@ public class Administrator {
     public int addThermalPlants(int ID, String address, int port) {
         synchronized (this) {
             DummyPlants dummyPlants = new DummyPlants(ID, address, port);
-            if (ThermalPlants.contains(dummyPlants)) {
+            if (isPresent(dummyPlants)) {
                 System.out.println("Adding ThermalPlants " + dummyPlants + " not possible because already there");
                 return -1;
             }
@@ -30,11 +31,11 @@ public class Administrator {
         }
     }
 
-    public int getThermalPlants(int ID_) {
+    public int getThermalPlants(int Id_) {
         synchronized (this) {
             for (DummyPlants thermalPlant : ThermalPlants) {
-                if (thermalPlant.getID() == ID_) {
-                    UpdateInformations(thermalPlant.getInformation(), thermalPlant.getID()); //Aggiorno le informazioni
+                if (thermalPlant.getId() == Id_) {
+                    UpdateInformations(thermalPlant.getInformation(), thermalPlant.getId()); //Aggiorno le informazioni
                     return 0;
                 }
             }
@@ -42,16 +43,29 @@ public class Administrator {
         }
     }
 
-    public String getInformation(int ID_) {
+    public String getInformation(int id_) {
         for (DummyPlants thermalPlant : ThermalPlants) {
-            if (thermalPlant.getID() == ID_) {
+            if (thermalPlant.getId() == id_) {
                 return thermalPlant.getInformation();
             }
         }
         return "Nessuna informazione";
     }
 
+    public List<DummyPlants> getThermalPlantsList() {
+        return ThermalPlants;
+    }
+
     private void UpdateInformations(String info, int i){
         informations.put(i, info);
+    }
+
+    private boolean isPresent(DummyPlants dummyPlants) {
+        for (DummyPlants thermalPlant : ThermalPlants) {
+            if (Objects.equals(thermalPlant.getId(), dummyPlants.getId())) {
+                return true;
+            }
+        }
+        return false;
     }
 }
