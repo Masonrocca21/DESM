@@ -47,14 +47,19 @@ public class ClientAdmin {
                 }
                 break;
                 case 2: {
-                   
+                    String getPath = "/Administrator/getList";
+                    ResponseEntity<String> getResponse = getRequest(serverAddress + getPath );
+                    System.out.println(getResponse);
+                    System.out.println(getResponse.getBody());
                 }
                 break;
                 case 3: {
-                    String getPath = "/Administrator/get";
-                    System.out.println("Enter ID: ");
-                    int id = Integer.parseInt(inputStream.readLine());
-                    ResponseEntity<String> getResponse = getRequest(serverAddress + getPath + id); //Verificare se serve il "toString"
+                    String getPath = "/Administrator/getPollution/";
+                    System.out.println("Enter timeA: ");
+                    int timeA = Integer.parseInt(inputStream.readLine());
+                    System.out.println("Enter timeB: ");
+                    int timeB = Integer.parseInt(inputStream.readLine());
+                    ResponseEntity<String> getResponse = getRequest(serverAddress + getPath + timeA + "/" + timeB); //Verificare se serve il lo slash
                     System.out.println(getResponse);
                     System.out.println(getResponse.getBody());
                 }

@@ -42,18 +42,24 @@ public class AdministratorController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
 }
-    @GetMapping(value = "/get/{ID}", produces = "text/plain")
-    public ResponseEntity<String> getThermalPlants(@PathVariable("ID") int IDplant) {
+    @GetMapping(value = "/getList", produces = "text/plain")
+    public ResponseEntity<String> getThermalPlants() {
 
-        int information = administrator.getThermalPlants(IDplant);
-        if (information == -1) {
+        ;
+        if (administrator.getThermalPlants() == null) {
+            return ResponseEntity.ok("No Power Plant is present");
+        }
+
+        return ResponseEntity.ok("Ecco la lista: " + administrator.getThermalPlants().toString());
+    }
+
+    @GetMapping(value = "/getPollution/{timeA}/{timeB}", produces = "text/plain")
+    public ResponseEntity<String> getPollution(@PathVariable("timeA") int timeA, @PathVariable("timeB") int timeB) {
+
+        if (administrator.getPollution(timeA, timeB) == -1) {
             return ResponseEntity.ok("Informations not present");
         }
-        return ResponseEntity.ok(administrator.getInformation(IDplant));
-        // ATTENZIONE qui probabilmente si può mettere tutto insieme...verificare
+        return ResponseEntity.ok("Average Pollution between " + timeA + "s and " + timeB + "s = " + administrator.getPollution(timeA, timeB));
     }
 
-    public List<DummyPlants> getPlants() {
-        return administrator.getThermalPlantsList();
-    }
 }

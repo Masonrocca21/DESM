@@ -32,4 +32,9 @@ public class DummyPlants {
         return this.information;
     }
 
+    public int[] getPollution(){ return new int[]{1 ,2}; }
+
+    public String toString(){
+        return "ID = " + this.getId() +"\nAddress = " + this.getAddress() +"\nPortNumber = " + this.getPortNumber();
+    }
 }
