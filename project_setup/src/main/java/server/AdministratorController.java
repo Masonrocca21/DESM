@@ -25,7 +25,7 @@ public class AdministratorController {
     }
 
     @PostMapping(value = "/add", consumes = {"application/json", "application/xml"})
-    public ResponseEntity<Void> addThermalPlants(@RequestBody ThermalPowerPlants dummyPlants) {
+    public ResponseEntity<List<ThermalPowerPlants>> addThermalPlants(@RequestBody ThermalPowerPlants dummyPlants) {
         try {
             String json = mapper.writeValueAsString(dummyPlants);
             System.out.println("JSON inviato: " + json);
@@ -33,11 +33,12 @@ public class AdministratorController {
             System.out.println("Ricevuto Address: " + dummyPlants.getAddress());
             System.out.println("Ricevuto Port: " + dummyPlants.getPortNumber());
 
-            int result = administrator.addThermalPlants(dummyPlants.getId(), dummyPlants.getAddress(), dummyPlants.getPortNumber());
-            if (result == -1) {
+            List<ThermalPowerPlants> result = administrator.addThermalPlants(dummyPlants.getId(), dummyPlants.getAddress(), dummyPlants.getPortNumber());
+            if (result == null) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
             } else {
-                return ResponseEntity.ok().build();
+                List<ThermalPowerPlants> otherPlants = administrator.getThermalPlantsExcept(dummyPlants.getId());
+                return ResponseEntity.ok(otherPlants);
             }
         }catch (Exception e) {
             e.printStackTrace();
@@ -46,8 +47,6 @@ public class AdministratorController {
 }
     @GetMapping(value = "/getList", produces = "text/plain")
     public ResponseEntity<String> getThermalPlants() {
-
-        ;
         if (administrator.getThermalPlants() == null) {
             return ResponseEntity.ok("No Power Plant is present");
         }

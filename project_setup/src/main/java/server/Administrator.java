@@ -20,18 +20,19 @@ public class Administrator {
     private HashMap<Integer, int[]> pollutionStatistics = new HashMap<>();
 
 
-    public int addThermalPlants(int ID, String address, int port) {
+    public List<ThermalPowerPlants> addThermalPlants(int ID, String address, int port) {
         synchronized (this) {
             ThermalPowerPlants dummyPlants = new ThermalPowerPlants(ID, address, port, "http://localhost:8080");
             if (isPresent(dummyPlants)) {
                 System.out.println("Adding ThermalPlants not possible because already there!!");
-                return -1;
+                return null;
             }
             else {
                 ThermalPlants.add(dummyPlants);
                 pollutionStatistics.put(ID, dummyPlants.getPollution());
-                System.out.println("Added ThermalPlant: " + ThermalPlants.get(0));
-                return 0;
+                System.out.println("Added ThermalPlant: " + dummyPlants);
+                System.out.println("Lista piante della nuova pianta: " + dummyPlants.getOtherPlants().toString());
+                return ThermalPlants;
             }
         }
     }
@@ -40,6 +41,19 @@ public class Administrator {
         synchronized (this) {
             if (ThermalPlants.isEmpty()) { return null; }
             return ThermalPlants;
+        }
+    }
+
+    public List<ThermalPowerPlants> getThermalPlantsExcept(int ID) {
+        List<ThermalPowerPlants> filteredThermalPlants = new ArrayList<>();
+        synchronized (this) {
+            for (ThermalPowerPlants t : ThermalPlants) {
+                if (t.getId() != ID) {
+                    filteredThermalPlants.add(t);
+                     //Si dovrebbe poter togliere
+                }
+            }
+            return filteredThermalPlants;
         }
     }
 

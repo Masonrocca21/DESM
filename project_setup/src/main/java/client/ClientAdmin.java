@@ -8,6 +8,7 @@ import ThermalPowerPlants.ThermalPowerPlants;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.Arrays;
 
 public class ClientAdmin {
 
@@ -30,9 +31,10 @@ public class ClientAdmin {
             if (inputMenuSelection == 4) { break; }
 
             switch (inputMenuSelection) {
-                case 1: {
+                case 1: {  //Se 1 aggiungo una pianta termale
                     String postPath = "/Administrator/add";
 
+                    //Faccio settare i parametri allutente
                     System.out.println("Adding a thermal plant");
                     System.out.println("Enter ID: ");
                     int id = Integer.parseInt(inputStream.readLine());
@@ -41,19 +43,27 @@ public class ClientAdmin {
                     System.out.println("Enter portNumber: ");
                     int portNumber = Integer.parseInt(inputStream.readLine());
 
+                    //Creo la pianta termale
                     ThermalPowerPlants newPlant = new ThermalPowerPlants(id, address, portNumber, serverAddress);
 
-                    ResponseEntity<String> postResponse = postRequest(serverAddress + postPath, newPlant);
+                    //eseguo la chiamata a post
+                    ResponseEntity<ThermalPowerPlants[]> postResponse = postRequest(serverAddress + postPath, newPlant);
+                    //Se tutto funziona bene, salvo la lista delle altre piante termali nella nuova pianta termale
+                    if (postResponse.getStatusCode() == HttpStatus.OK && postResponse.getBody() != null) {
+                        ThermalPowerPlants[] otherPlants = postResponse.getBody();
+                        newPlant.setPlantsList(Arrays.asList(otherPlants));
+                    }
                 }
                 break;
-                case 2: {
+                case 2: { //Se 2 Visualizzo la lista di tutte le piante termali
+                    //Setto per la get request
                     String getPath = "/Administrator/getList";
                     ResponseEntity<String> getResponse = getRequest(serverAddress + getPath );
                     System.out.println(getResponse);
                     System.out.println(getResponse.getBody());
                 }
                 break;
-                case 3: {
+                case 3: { // Se 3 fornisco i valori delle statistiche
                     String getPath = "/Administrator/getPollution/";
                     System.out.println("Enter timeA: ");
                     int timeA = Integer.parseInt(inputStream.readLine());
@@ -71,13 +81,13 @@ public class ClientAdmin {
         }
     }
 
-    public static ResponseEntity<String> postRequest(String url, ThermalPowerPlants dummyPlants) {
+    public static ResponseEntity<ThermalPowerPlants[]> postRequest(String url, ThermalPowerPlants dummyPlants) {
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
 
             HttpEntity<ThermalPowerPlants> request = new HttpEntity<>(dummyPlants, headers);
-            return restTemplate.postForEntity(url, request, String.class);
+            return restTemplate.postForEntity(url, request, ThermalPowerPlants[].class);
         } catch (Exception e) {
             System.out.println("Server not available: " + e.getMessage());
             return new ResponseEntity<>(HttpStatus.SERVICE_UNAVAILABLE);
