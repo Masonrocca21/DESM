@@ -3,7 +3,7 @@ package client;
 import org.springframework.expression.spel.ast.Selection;
 import org.springframework.http.*;
 import org.springframework.web.client.RestTemplate;
-import server.DummyPlants;
+import ThermalPowerPlants.ThermalPowerPlants;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -41,7 +41,7 @@ public class ClientAdmin {
                     System.out.println("Enter portNumber: ");
                     int portNumber = Integer.parseInt(inputStream.readLine());
 
-                    DummyPlants newPlant = new DummyPlants(id, address, portNumber);
+                    ThermalPowerPlants newPlant = new ThermalPowerPlants(id, address, portNumber, serverAddress);
 
                     ResponseEntity<String> postResponse = postRequest(serverAddress + postPath, newPlant);
                 }
@@ -71,12 +71,12 @@ public class ClientAdmin {
         }
     }
 
-    public static ResponseEntity<String> postRequest(String url, DummyPlants dummyPlants) {
+    public static ResponseEntity<String> postRequest(String url, ThermalPowerPlants dummyPlants) {
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
 
-            HttpEntity<DummyPlants> request = new HttpEntity<>(dummyPlants, headers);
+            HttpEntity<ThermalPowerPlants> request = new HttpEntity<>(dummyPlants, headers);
             return restTemplate.postForEntity(url, request, String.class);
         } catch (Exception e) {
             System.out.println("Server not available: " + e.getMessage());

@@ -5,6 +5,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 
+import ThermalPowerPlants.ThermalPowerPlants;
+
 
 import org.springframework.stereotype.Service;
 
@@ -12,7 +14,7 @@ import org.springframework.stereotype.Service;
 @Service //Spring automatically makes this class a singleton bean
 public class Administrator {
 
-    private final List<DummyPlants> ThermalPlants = new ArrayList<DummyPlants>();
+    private final List<ThermalPowerPlants> ThermalPlants = new ArrayList<ThermalPowerPlants>();
     private HashMap<Integer, String> informations = new HashMap<>();
 
     private HashMap<Integer, int[]> pollutionStatistics = new HashMap<>();
@@ -20,7 +22,7 @@ public class Administrator {
 
     public int addThermalPlants(int ID, String address, int port) {
         synchronized (this) {
-            DummyPlants dummyPlants = new DummyPlants(ID, address, port);
+            ThermalPowerPlants dummyPlants = new ThermalPowerPlants(ID, address, port, "http://localhost:8080");
             if (isPresent(dummyPlants)) {
                 System.out.println("Adding ThermalPlants not possible because already there!!");
                 return -1;
@@ -34,7 +36,7 @@ public class Administrator {
         }
     }
 
-    public List<DummyPlants> getThermalPlants() {
+    public List<ThermalPowerPlants> getThermalPlants() {
         synchronized (this) {
             if (ThermalPlants.isEmpty()) { return null; }
             return ThermalPlants;
@@ -44,7 +46,7 @@ public class Administrator {
     public int getPollution(int timeA, int timeB) {
         int averagePollution = 0;
         if (ThermalPlants.isEmpty()) { return -1; }
-        for (DummyPlants thermalPlant : ThermalPlants) {
+        for (ThermalPowerPlants thermalPlant : ThermalPlants) {
             if (pollutionStatistics.get(thermalPlant.getId())[0] > timeA && pollutionStatistics.get(thermalPlant.getId())[1] < timeB) {
                 averagePollution += pollutionStatistics.get(thermalPlant.getId())[1];
             }
@@ -56,8 +58,8 @@ public class Administrator {
         informations.put(i, info);
     }
 
-    private boolean isPresent(DummyPlants dummyPlants) {
-        for (DummyPlants thermalPlant : ThermalPlants) {
+    private boolean isPresent(ThermalPowerPlants dummyPlants) {
+        for (ThermalPowerPlants thermalPlant : ThermalPlants) {
             if (Objects.equals(thermalPlant.getId(), dummyPlants.getId())) {
                 return true;
             }

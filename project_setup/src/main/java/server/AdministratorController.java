@@ -6,6 +6,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import ThermalPowerPlants.ThermalPowerPlants;
+
 import java.util.List;
 
 @RestController
@@ -23,7 +25,7 @@ public class AdministratorController {
     }
 
     @PostMapping(value = "/add", consumes = {"application/json", "application/xml"})
-    public ResponseEntity<Void> addThermalPlants(@RequestBody DummyPlants dummyPlants) {
+    public ResponseEntity<Void> addThermalPlants(@RequestBody ThermalPowerPlants dummyPlants) {
         try {
             String json = mapper.writeValueAsString(dummyPlants);
             System.out.println("JSON inviato: " + json);
