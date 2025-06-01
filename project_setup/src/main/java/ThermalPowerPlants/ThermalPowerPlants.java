@@ -5,6 +5,8 @@ import org.eclipse.paho.client.mqttv3.*;
 import java.util.ArrayList;
 import java.util.List;
 
+import io.grpc.ServerBuilder;
+
 public class ThermalPowerPlants {
     private int id;
     private String address;
@@ -46,9 +48,21 @@ public class ThermalPowerPlants {
         // HTTP POST verso l'amministratore con ID, address e port
     }
 
-    private void startGrpcServer() {
-        // Avvia server gRPC con il tuo handler (implementazione dei metodi)
-    }
+      /*  private void startGrpcServer() {
+            // Avvia server gRPC con il tuo handler (implementazione dei metodi)
+            try {
+                io.grpc.Server server = ServerBuilder.forPort(portNumber)
+                        .addService(new PlantServiceImpl(this))
+                        .build()
+                        .start();
+                System.out.println("gRPC server started at " + portNumber);
+                server.awaitTermination();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    */
+    private void startGrpcServer() {}
 
     private void connectToOtherPlants() {
         // Per ogni impianto nella lista, crea un gRPC stub client

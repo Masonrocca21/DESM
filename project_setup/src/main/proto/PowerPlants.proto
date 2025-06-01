@@ -1,0 +1,22 @@
+// powerplant.proto
+syntax = "proto3";
+option java_package = "com.example.powerplants";
+option java_multiple_files = true;
+
+package PowerPlants;
+
+service PlantService {
+    // Chiamata da una pianta a un'altra per decidere se soddisfare una richiesta energetica
+    rpc HandleEnergyRequest (EnergyRequest) returns (EnergyResponse);
+}
+
+message EnergyRequest {
+    int32 requestId = 1;
+    int32 requiredEnergy = 2;
+    int32 senderId = 3;
+}
+
+message EnergyResponse {
+    bool canHandle = 1;
+    string message = 2;
+}

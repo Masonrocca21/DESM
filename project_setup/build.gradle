@@ -51,12 +51,12 @@ sourceSets {
 
 protobuf {
     protoc {
-        artifact = 'com.google.protobuf:protoc:3.13.0:osx-x86_64'
+        artifact = 'com.google.protobuf:protoc:3.13.0:windows-x86_64'
     }
 
     plugins {
         grpc {
-            artifact = 'io.grpc:protoc-gen-grpc-java:1.25.0:osx-x86_64'
+            artifact = 'io.grpc:protoc-gen-grpc-java:1.25.0:windows-x86_64'
         }
     }
 
