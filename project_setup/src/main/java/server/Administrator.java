@@ -1,9 +1,6 @@
 package server;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 
 import ThermalPowerPlants.ThermalPowerPlants;
 
@@ -44,16 +41,16 @@ public class Administrator {
         }
     }
 
-    public List<ThermalPowerPlants> getThermalPlantsExcept(int ID) {
-        List<ThermalPowerPlants> filteredThermalPlants = new ArrayList<>();
+    public Map<Integer, String> getThermalPlantsExcept(int ID) {
+        Map<Integer, String> topology = new HashMap<>();
         synchronized (this) {
             for (ThermalPowerPlants t : ThermalPlants) {
                 if (t.getId() != ID) {
-                    filteredThermalPlants.add(t);
+                    topology.put(t.getId(), t.getAddress());
                      //Si dovrebbe poter togliere
                 }
             }
-            return filteredThermalPlants;
+            return topology;
         }
     }
 

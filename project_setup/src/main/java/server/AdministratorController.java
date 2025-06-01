@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
 import ThermalPowerPlants.ThermalPowerPlants;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/Administrator")
@@ -25,7 +26,7 @@ public class AdministratorController {
     }
 
     @PostMapping(value = "/add", consumes = {"application/json", "application/xml"})
-    public ResponseEntity<List<ThermalPowerPlants>> addThermalPlants(@RequestBody ThermalPowerPlants dummyPlants) {
+    public ResponseEntity<Map<Integer, String>> addThermalPlants(@RequestBody ThermalPowerPlants dummyPlants) {
         try {
             String json = mapper.writeValueAsString(dummyPlants);
             System.out.println("JSON inviato: " + json);
@@ -37,8 +38,8 @@ public class AdministratorController {
             if (result == null) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
             } else {
-                List<ThermalPowerPlants> otherPlants = administrator.getThermalPlantsExcept(dummyPlants.getId());
-                return ResponseEntity.ok(otherPlants);
+                Map<Integer, String> topology = administrator.getThermalPlantsExcept(dummyPlants.getId());
+                return ResponseEntity.ok(topology);
             }
         }catch (Exception e) {
             e.printStackTrace();

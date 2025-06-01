@@ -19,4 +19,6 @@ message EnergyRequest {
 message EnergyResponse {
     bool canHandle = 1;
     string message = 2;
+    int32 pollution = 3;         // livello di inquinamento
+    int32 availableEnergy = 4;   // energia disponibile
 }

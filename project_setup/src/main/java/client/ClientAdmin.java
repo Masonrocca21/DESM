@@ -25,37 +25,13 @@ public class ClientAdmin {
 
         while (true) {
             //Compare il menù per poter selezionare cosa fare
-            System.out.println("Select the service:\n 1) Add a thermal plant\n 2) List of Thermal Plants\n 3) Statistics \n 4) Exit \n Number of the selection: ");
+            System.out.println("Select the service:\n 1) List of Thermal Plants\n 2) Statistics \n 3) Exit \n Number of the selection: ");
             int inputMenuSelection = Integer.parseInt(inputStream.readLine());
 
             if (inputMenuSelection == 4) { break; }
 
             switch (inputMenuSelection) {
-                case 1: {  //Se 1 aggiungo una pianta termale
-                    String postPath = "/Administrator/add";
-
-                    //Faccio settare i parametri allutente
-                    System.out.println("Adding a thermal plant");
-                    System.out.println("Enter ID: ");
-                    int id = Integer.parseInt(inputStream.readLine());
-                    System.out.println("Enter address: ");
-                    String address = inputStream.readLine();
-                    System.out.println("Enter portNumber: ");
-                    int portNumber = Integer.parseInt(inputStream.readLine());
-
-                    //Creo la pianta termale
-                    ThermalPowerPlants newPlant = new ThermalPowerPlants(id, address, portNumber, serverAddress);
-
-                    //eseguo la chiamata a post
-                    ResponseEntity<ThermalPowerPlants[]> postResponse = postRequest(serverAddress + postPath, newPlant);
-                    //Se tutto funziona bene, salvo la lista delle altre piante termali nella nuova pianta termale
-                    if (postResponse.getStatusCode() == HttpStatus.OK && postResponse.getBody() != null) {
-                        ThermalPowerPlants[] otherPlants = postResponse.getBody();
-                        newPlant.setPlantsList(Arrays.asList(otherPlants));
-                    }
-                }
-                break;
-                case 2: { //Se 2 Visualizzo la lista di tutte le piante termali
+                case 1: { //Se 2 Visualizzo la lista di tutte le piante termali
                     //Setto per la get request
                     String getPath = "/Administrator/getList";
                     ResponseEntity<String> getResponse = getRequest(serverAddress + getPath );
@@ -63,7 +39,7 @@ public class ClientAdmin {
                     System.out.println(getResponse.getBody());
                 }
                 break;
-                case 3: { // Se 3 fornisco i valori delle statistiche
+                case 2: { // Se 3 fornisco i valori delle statistiche
                     String getPath = "/Administrator/getPollution/";
                     System.out.println("Enter timeA: ");
                     int timeA = Integer.parseInt(inputStream.readLine());
@@ -72,6 +48,10 @@ public class ClientAdmin {
                     ResponseEntity<String> getResponse = getRequest(serverAddress + getPath + timeA + "/" + timeB); //Verificare se serve il lo slash
                     System.out.println(getResponse);
                     System.out.println(getResponse.getBody());
+                }
+                break;
+                case 3: {
+                    //Chiudere
                 }
                 break;
                 default: {
