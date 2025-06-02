@@ -26,7 +26,7 @@ public class AdministratorController {
     }
 
     @PostMapping(value = "/add", consumes = {"application/json", "application/xml"})
-    public ResponseEntity<Map<Integer, String>> addThermalPlants(@RequestBody ThermalPowerPlants dummyPlants) {
+    public ResponseEntity<List<ThermalPowerPlants>> addThermalPlants(@RequestBody ThermalPowerPlants dummyPlants) {
         try {
             String json = mapper.writeValueAsString(dummyPlants);
             System.out.println("JSON inviato: " + json);
@@ -38,8 +38,8 @@ public class AdministratorController {
             if (result == null) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
             } else {
-                Map<Integer, String> topology = administrator.getThermalPlantsExcept(dummyPlants.getId());
-                return ResponseEntity.ok(topology);
+              //  Map<Integer, String> topology = administrator.getThermalPlantsExcept(dummyPlants.getId());
+                return ResponseEntity.ok(result);
             }
         }catch (Exception e) {
             e.printStackTrace();

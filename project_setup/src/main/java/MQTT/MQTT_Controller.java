@@ -20,7 +20,7 @@ public class MQTT_Controller {
         broker = "tcp://localhost:1883";
         clientId = MqttClient.generateClientId();
         subTopic = "home/renewableEnergyProvider/power";
-        pubTopic = "home/controllers/temp";
+        pubTopic = "home/renewableEnergyProvider/power";
 
         try {
             client = new MqttClient(broker, clientId);

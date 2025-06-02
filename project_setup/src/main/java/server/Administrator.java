@@ -28,7 +28,7 @@ public class Administrator {
                 ThermalPlants.add(dummyPlants);
                 pollutionStatistics.put(ID, dummyPlants.getPollution());
                 System.out.println("Added ThermalPlant: " + dummyPlants);
-                System.out.println("Lista piante della nuova pianta: " + dummyPlants.getOtherPlants().toString());
+                System.out.println("Lista piante della nuova pianta: " + dummyPlants.getAllPlants().toString());
                 return ThermalPlants;
             }
         }
@@ -46,7 +46,7 @@ public class Administrator {
         synchronized (this) {
             for (ThermalPowerPlants t : ThermalPlants) {
                 if (t.getId() != ID) {
-                    topology.put(t.getId(), t.getAddress());
+                    topology.put(t.getId(), t.getAddress() + ":" + t.getPortNumber().toString());
                      //Si dovrebbe poter togliere
                 }
             }

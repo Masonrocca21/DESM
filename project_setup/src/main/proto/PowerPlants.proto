@@ -8,6 +8,8 @@ package PowerPlants;
 service PlantService {
     // Chiamata da una pianta a un'altra per decidere se soddisfare una richiesta energetica
     rpc HandleEnergyRequest (EnergyRequest) returns (EnergyResponse);
+    rpc SendElection (ElectionMessage) returns (Ack);
+    rpc SendElected (ElectedMessage) returns (Ack);
 }
 
 message EnergyRequest {
@@ -21,4 +23,19 @@ message EnergyResponse {
     string message = 2;
     int32 pollution = 3;         // livello di inquinamento
     int32 availableEnergy = 4;   // energia disponibile
+}
+
+message Ack {
+    string message = 1;
+}
+
+message ElectionMessage {
+    int32 initiatorId = 1;
+    int32 candidateId = 2;       // chi è il migliore finora
+    double candidateValue = 3;    // valore (es. inquinamento o energia disponibile)
+}
+
+message ElectedMessage {
+    int32 winnerId = 1;
+    double winnerValue = 2;
 }
