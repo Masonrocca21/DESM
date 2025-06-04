@@ -10,6 +10,13 @@ service PlantService {
     rpc HandleEnergyRequest (EnergyRequest) returns (EnergyResponse);
     rpc SendElection (ElectionMessage) returns (Ack);
     rpc SendElected (ElectedMessage) returns (Ack);
+    rpc AnnouncePresence(PlantInfoMessage) returns (Ack);
+}
+
+message PlantInfoMessage {
+    int32 id = 1;         // O string se l'ID è stringa
+    string address = 2;
+    int32 port_number = 3;
 }
 
 message EnergyRequest {
@@ -17,6 +24,7 @@ message EnergyRequest {
     int32 requiredEnergy = 2;
     int32 senderId = 3;
 }
+
 
 message EnergyResponse {
     bool canHandle = 1;

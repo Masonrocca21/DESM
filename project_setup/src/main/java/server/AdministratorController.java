@@ -1,7 +1,7 @@
 package server;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Autowired;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -10,6 +10,7 @@ import ThermalPowerPlants.ThermalPowerPlants;
 
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 
 @RestController
 @RequestMapping("/Administrator")
@@ -38,14 +39,15 @@ public class AdministratorController {
             if (result == null) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
             } else {
-              //  Map<Integer, String> topology = administrator.getThermalPlantsExcept(dummyPlants.getId());
+                //  Map<Integer, String> topology = administrator.getThermalPlantsExcept(dummyPlants.getId());
                 return ResponseEntity.ok(result);
             }
-        }catch (Exception e) {
+        } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
-}
+    }
+
     @GetMapping(value = "/getList", produces = "text/plain")
     public ResponseEntity<String> getThermalPlants() {
         if (administrator.getThermalPlants() == null) {
@@ -55,13 +57,24 @@ public class AdministratorController {
         return ResponseEntity.ok("Ecco la lista: " + administrator.getThermalPlants().toString());
     }
 
-    @GetMapping(value = "/getPollution/{timeA}/{timeB}", produces = "text/plain")
-    public ResponseEntity<String> getPollution(@PathVariable("timeA") int timeA, @PathVariable("timeB") int timeB) {
+    @GetMapping(value = "/getPollutionStats/{t1_ms}/{t2_ms}", produces = "text/plain")
+    public ResponseEntity<Map<String, Object>> getPollutionStatistics( // CAMBIA TIPO DI RITORNO
+                                                                       @PathVariable("t1_ms") long timeA_milliseconds,
+                                                                       @PathVariable("t2_ms") long timeB_milliseconds) {
 
-        if (administrator.getPollution(timeA, timeB) == -1) {
-            return ResponseEntity.ok("Informations not present");
+        System.out.println("AdminController: Received request for pollution stats between " +
+                timeA_milliseconds + "ms and " + timeB_milliseconds + "ms");
+
+        if (timeB_milliseconds < timeA_milliseconds) {
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("error", "End timestamp cannot be before start timestamp");
+            errorResponse.put("averageCo2", -1.0); // o valore indicativo di errore
+            errorResponse.put("readingsCount", -1);
+            return ResponseEntity.badRequest().body(errorResponse);
         }
-        return ResponseEntity.ok("Average Pollution between " + timeA + "s and " + timeB + "s = " + administrator.getPollution(timeA, timeB));
-    }
+        Map<String, Object> stats = administrator.getAveragePollutionBetweenAsMap(timeA_milliseconds, timeB_milliseconds);
 
+        return ResponseEntity.ok(stats);
+
+    }
 }

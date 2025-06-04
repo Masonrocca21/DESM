@@ -6,6 +6,7 @@ import com.example.powerplants.PlantServiceGrpc;
 import com.example.powerplants.ElectionMessage;
 import com.example.powerplants.ElectedMessage;
 import io.grpc.ManagedChannel;
+import ThermalPowerPlants.ThermalPowerPlants;
 
 import java.util.*;
 
@@ -13,18 +14,22 @@ public class NetworkManager {
     private final int myId;
     private double myValue; // es. livello di inquinamento, o energia disponibile
 
-    private PlantServiceGrpc.PlantServiceBlockingStub successorStub;
-    private ManagedChannel successorChannel;
-    private int nextId = 0;
+    private volatile PlantServiceGrpc.PlantServiceBlockingStub successorStub;
+    private volatile ManagedChannel successorChannel;
     private boolean participant = false;
+    private final ThermalPowerPlants plantInstance;
+    private double currentElectionKWh;
 
 
-    public NetworkManager(int myId, double myValue,
+    public NetworkManager(ThermalPowerPlants plantOwner, int myId, double myValue,
                            PlantServiceGrpc.PlantServiceBlockingStub stub, ManagedChannel channel ) {
         this.myId = myId;
         this.myValue = myValue;
         this.successorStub = stub;
         this.successorChannel = channel;
+        this.plantInstance = plantOwner;
+
+        System.out.println("NetworkManager (Plant " + this.myId + ") CONSTRUCTOR: this.successorStub is null? " + (this.successorStub == null) + " (Passed stub was null? " + (stub == null) + ")");
 
 
         // Verifica che lo stub del successore sia fornito se c'è un canale
@@ -37,7 +42,7 @@ public class NetworkManager {
         }
 
     }
-    public void updateSuccessor(PlantServiceGrpc.PlantServiceBlockingStub newSuccessorStub,
+    public synchronized void updateSuccessor(PlantServiceGrpc.PlantServiceBlockingStub newSuccessorStub,
                                 ManagedChannel newSuccessorChannel) {
         System.out.println("NetworkManager (Plant " + this.myId + "): Updating successor");
 
@@ -56,7 +61,7 @@ public class NetworkManager {
         System.out.println("NetworkManager (Plant " + this.myId + "): Successor updated successfully");
     }
 
-    public void startElection() {
+    public void startElection(double kWh) {
         if (this.successorStub == null) {
             System.out.println("NetworkManager (Plant " + this.myId + "): Cannot start election, no successor defined. Am I alone?");
             // Se sono solo, potrei auto-eleggermi (se la logica lo prevede)
@@ -64,7 +69,15 @@ public class NetworkManager {
             return;
         }
 
-        participant = true;
+        // ...
+        if (this.plantInstance != null && !this.plantInstance.isReadyForElection()){
+            System.out.println("NetworkManager (Plant " + this.myId + "): Plant is not generally ready for election logic yet. Aborting startElection.");
+            return;
+        }
+
+        this.currentElectionKWh = kWh;
+        this.participant = true; // Questo 'participant' è specifico del NetworkManager per l'elezione corrente
+
         ElectionMessage msg = ElectionMessage.newBuilder()
                 .setInitiatorId(myId)
                 .setCandidateId(myId)
@@ -89,10 +102,41 @@ public class NetworkManager {
     }
 
     public void onElectionMessage(ElectionMessage receivedMsg) {
+
         System.out.println("NetworkManager (Plant " + this.myId + "): Received election message. Candidate: " +
                 receivedMsg.getCandidateId() + " with value " + receivedMsg.getCandidateValue());
 
-        if (this.successorStub == null) {
+        try {
+            // DELAY SIMULATO
+            long processingDelay = 2000 + (long)(Math.random() * 2000); // Delay tra 30 e 180 ms
+            System.out.println("NetworkManager (Plant " + this.myId + "): Simulating processing delay of " + processingDelay + "ms for received ELECTION from candidate " + receivedMsg.getCandidateId());
+            Thread.sleep(processingDelay);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("NetworkManager (Plant " + this.myId + "): Sleep interrupted during ELECTION processing.");
+        }
+
+        // Stato della pianta proprietaria
+        boolean isOwningPlantBusy = false;
+        if (this.plantInstance != null) {
+            isOwningPlantBusy = this.plantInstance.isBusyProducing();
+        } else {
+            System.err.println("NetworkManager (Plant " + this.myId + "): plantInstance is null in onElectionMessage!");
+            // In questo caso, non possiamo determinare lo stato busy. Per sicurezza, non partecipiamo attivamente.
+            // Ma dobbiamo comunque provare a inoltrare se abbiamo uno stub.
+        }
+
+        // Cattura lo stub e le info del successore in modo sincronizzato
+        // Questo è importante per mitigare il CANCELLED error, come discusso prima
+        PlantServiceGrpc.PlantServiceBlockingStub stubToUseForForwarding;
+        ManagedChannel channelInUseForForwarding;
+
+        synchronized (this) { // Sincronizza l'accesso allo stato del successore
+            stubToUseForForwarding = this.successorStub;
+            channelInUseForForwarding = this.successorChannel;
+        }
+
+        if (stubToUseForForwarding == null) {
             System.out.println("NetworkManager (Plant " + this.myId + "): No successor. Assuming I am the candidate " +
                     receivedMsg.getCandidateId() + " if IDs match, or the winner if the message originated from me.");
             // Se il messaggio è tornato a chi lo ha inviato e non ci sono altri, è il vincitore.
@@ -122,16 +166,45 @@ public class NetworkManager {
         if (receivedMsg.getCandidateId() == this.myId) {
             System.out.println("NetworkManager (Plant " + this.myId + "): My election message returned. I am the winner!");
             participant = false; // Ho vinto
+
+            // ----- CHIAMATA A handleElectionWinAndStartProduction -----
+            if (this.plantInstance != null) { // plantInstance è il riferimento a ThermalPowerPlants
+                this.plantInstance.handleElectionWinAndStartProduction(this.currentElectionKWh);
+            } else {
+                System.err.println("NetworkManager (Plant " + this.myId + "): CRITICAL - plantInstance is null, cannot start production for win!");
+            }
+            // ---------------------------------------------------------
+
+
             // Invio il messaggio ELECTED
             sendElectedToNext(this.myId, this.myValue); // Devo passare anche il valore del vincitore
             return;
         }
 
-        // 2. Se non sono io il candidato nel messaggio, confronto i valori.
-        // La specifica del progetto dice: "lowest offered price", "plant with the highest ID wins" in caso di parità.
-        // Il tuo codice attuale fa: myValue < msg.getCandidateValue() (quindi valore più basso vince)
-        // E: myId < msg.getCandidateId() (quindi ID più basso vince in caso di parità). Questo è l'OPPOSTO.
-        // Adattiamo alla specifica del progetto (assumendo myValue sia il prezzo):
+        // Determina se questa pianta DEVE solo inoltrare o può partecipare attivamente
+        // Una pianta nuova o non ancora completamente inizializzata per le elezioni (dal punto di vista di questo NM)
+        // potrebbe non avere this.currentElectionRequestId impostato per la richiesta ricevuta,
+        // o this.participant potrebbe essere false.
+        boolean shouldOnlyForward = false;
+        String forwardReason = "";
+
+        if (isOwningPlantBusy) {
+            shouldOnlyForward = true;
+            forwardReason = "owning plant is busy";
+        }
+
+
+        if (shouldOnlyForward) {
+            System.out.println("NetworkManager (Plant " + this.myId + "): Forwarding ELECTION for request '" +
+                    receivedMsg.getInitiatorId() + "' as is (candidate " + receivedMsg.getCandidateId() +
+                    ") because " + forwardReason + ".");
+            sendElectionToNext(receivedMsg); // Inoltra il messaggio. sendElectionToNext usa lo stub corrente.
+            return;
+        }
+
+        // Se arrivo qui, NON sono occupato E STO attivamente partecipando.
+        // Quindi, confronto la mia offerta.
+
         boolean iAmBetterCandidate = this.myValue < receivedMsg.getCandidateValue() ||
                 (this.myValue == receivedMsg.getCandidateValue() && this.myId > receivedMsg.getCandidateId());
 
@@ -179,7 +252,16 @@ public class NetworkManager {
     }
 
     private void sendElectionToNext(ElectionMessage msgToSend) {
-        if (this.successorStub == null) {
+        PlantServiceGrpc.PlantServiceBlockingStub stubToUse;
+        ManagedChannel channelToUse;
+
+        // Blocco sincronizzato per leggere lo stato corrente del successore
+        synchronized (this) {
+            stubToUse = this.successorStub;
+            channelToUse = this.successorChannel;
+        }
+
+        if (stubToUse == null) {
             System.err.println("NetworkManager (Plant " + this.myId + "): Cannot send ELECTION, successorStub is null.");
             // Potrebbe significare che sono solo e il messaggio era per me (già gestito in onElectionMessage)
             return;
@@ -189,17 +271,44 @@ public class NetworkManager {
             // abbia un metodo che accetta ElectionMessage. Dal tuo codice sembra 'sendElection'.
             System.out.println("NetworkManager (Plant " + this.myId + "): Sending ELECTION to successor " +
                     " (Candidate: " + msgToSend.getCandidateId() + ", Value: " + msgToSend.getCandidateValue() + ")");
-            this.successorStub.sendElection(msgToSend); // Usa lo stub del successore fornito
+            long networkDelay = 50 + (long)(Math.random() * 200); // Delay tra 50 e 250 ms
+            Thread.sleep(networkDelay);
+
+            stubToUse.sendElection(msgToSend); // Usa lo stub del successore fornito
         } catch (Exception e) {
-            System.err.println("NetworkManager (Plant " + this.myId + "): Error sending Election to successor " +
+            if (e instanceof io.grpc.StatusRuntimeException) {
+                io.grpc.StatusRuntimeException sre = (io.grpc.StatusRuntimeException) e;
+                if (sre.getStatus().getCode() == io.grpc.Status.Code.UNAVAILABLE ||
+                        sre.getStatus().getCode() == io.grpc.Status.Code.CANCELLED) {
+                    System.err.println("NetworkManager (Plant " + this.myId + "): ELECTION to successor FAILED (" + sre.getStatus().getCode() + "). " +
+                            "Channel used: " + channelToUse +
+                            ". Successor might have changed or channel was closed. Msg: " + sre.getMessage());
+                    // QUI: Potresti voler controllare se this.successorChannel (quello attuale) è diverso da channelSnapshot.
+                    // Se sì, il successore è cambiato. Potresti ritentare con il nuovo successore (con cautela per evitare loop).
+                    // Per ora, logghiamo solo l'errore.
+                    synchronized(this) {
+                        if (this.successorChannel != channelToUse) {
+                            System.err.println("NetworkManager (Plant " + this.myId + "): Successor has changed since attempting to send. New successor ID: ");
+                        }
+                    }
+                    return; // Non tentare più su questo canale/stub
+                }
+            }
+            System.err.println("NetworkManager (Plant " + this.myId + "): Generic error sending Election to successor " +
                      ": " + e.getMessage());
-            // Qui potresti gestire la logica di un vicino irraggiungibile
         }
     }
 
     // Modificato per includere anche il winnerValue
     private void sendElectedToNext(int winnerId, double winnerValue) {
-        if (this.successorStub == null) {
+        PlantServiceGrpc.PlantServiceBlockingStub stubToUse;
+
+        // Blocco sincronizzato per leggere lo stato corrente del successore
+        synchronized (this) {
+            stubToUse = this.successorStub;
+        }
+
+        if (stubToUse == null) {
             System.err.println("NetworkManager (Plant " + this.myId + "): Cannot send ELECTED, successorStub is null.");
             return;
         }
@@ -207,12 +316,11 @@ public class NetworkManager {
             ElectedMessage electedMsgToSend = ElectedMessage.newBuilder()
                     .setWinnerId(winnerId)
                     .setWinnerValue(winnerValue) // Includi il valore del vincitore nel messaggio
-                    // .setRequestId("some_unique_request_id")
                     .build();
             // Assicurati che il tuo servizio gRPC abbia un metodo 'sendElected'.
             System.out.println("NetworkManager (Plant " + this.myId + "): Sending ELECTED to successor " +
                     " (Winner: " + winnerId + ", Value: " + winnerValue + ")");
-            this.successorStub.sendElected(electedMsgToSend); // Usa lo stub del successore fornito
+            stubToUse.sendElected(electedMsgToSend); // Usa lo stub del successore fornito
         } catch (Exception e) {
             System.err.println("NetworkManager (Plant " + this.myId + "): Error sending Elected to successor " +
                      ": " + e.getMessage());
@@ -226,5 +334,9 @@ public class NetworkManager {
 
     public boolean isParticipant() {
         return participant;
+    }
+
+    public void setCurrentElectionKWh(double kWh) {
+        this.currentElectionKWh = kWh;
     }
 }
