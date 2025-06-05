@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +36,8 @@ public class ThermalPowerPlants {
     private Server grpcServer;
     private volatile boolean isShutdownInitiated = false; // Per evitare chiamate multiple a shutdown
     volatile String currentProductionRequestId;
+
+    private Set<String> concludedElectionRequestIds = ConcurrentHashMap.newKeySet(); // Thread-safe
 
 
     private boolean isActive;
@@ -532,6 +535,11 @@ public class ThermalPowerPlants {
     // Metodo da chiamare PRIMA di avviare una nuova elezione (es. da callback MQTT)
     public boolean prepareForNewElection(String requestId, double kwh) { // kwh solo per logging forse
         synchronized (this) {
+            if (isElectionConcluded(requestId)) { // <<< CONTROLLO QUI
+                System.out.println("TPP " + this.id + ": Election for request '" + requestId + "' ALREADY CONCLUDED. Cannot prepare/participate.");
+                return false;
+            }
+
             if (isBusyProducing()) { // Usa la nuova isBusyProducing()
                 System.out.println("TPP " + this.id + ": Cannot prepare for new election for request '" + requestId +
                         "', currently busy producing for request '" + currentProductionRequestId + "'.");
@@ -606,16 +614,16 @@ public class ThermalPowerPlants {
             return;
         }
 
-        electionProcessConcludedForRequest(requestId); // L'elezione è conclusa, la pianta è occupata o libera
+        markElectionAsConcluded(requestId); // <<< MARCA COME CONCLUSA
+        electionProcessConcludedForRequest(requestId); // Pulisce prezzo e partecipazione attiva
         isCurrentlyBusy = true;
         productionEndsAtMillis = System.currentTimeMillis() + productionDurationMs;
         this.currentProductionRequestId = requestId; // Salva l'ID della richiesta per cui stiamo producendo
 
-        System.out.println("TPP " + this.id + ": WON ELECTION for request '" + "'. " +
+        System.out.println("TPP " + this.id + ": WON ELECTION for request '" + requestId + "'. " +
                 "Starting production of " + kWhToProduce + " kWh. " +
                 "Will be busy for " + productionDurationMs + " ms (until " +
                 new Date(productionEndsAtMillis) + ").");
-        this.electionProcessConcludedForRequest(requestId);
 
         // Avvia un thread separato per "sbloccare" lo stato busy dopo la durata.
         Thread productionTimerThread = new Thread(() -> {
@@ -627,11 +635,14 @@ public class ThermalPowerPlants {
             } finally {
                 // Reset proattivo dello stato. Deve essere sincronizzato se accede
                 // alle stesse variabili di isBusyProducing.
-                synchronized (this) { // Sincronizza sul lock intrinseco dell'oggetto ThermalPowerPlants
+                synchronized (this) {
+                    final String productionRequestId = requestId; // Cattura il requestId del metodo esterno
+                    // Sincronizza sul lock intrinseco dell'oggetto ThermalPowerPlants
                     // Controlla se questa era ancora la produzione che doveva finire ora
                     // E se il productionEndsAtMillis non è stato sovrascritto
                     if (isCurrentlyBusy && System.currentTimeMillis() >= productionEndsAtMillis &&
-                            productionEndsAtMillis != 0L) { // Aggiunto controllo per productionEndsAtMillis != 0L
+                            productionEndsAtMillis != 0L &&
+                            productionRequestId.equals(this.currentProductionRequestId)) { // Aggiunto controllo per productionEndsAtMillis != 0L
                         // Per essere sicuri, potremmo voler controllare se productionEndsAtMillis è esattamente
                         // quello che ci aspettavamo da QUESTA produzione, ma diventa più complesso.
                         // Il controllo temporale è di solito sufficiente.
@@ -639,6 +650,7 @@ public class ThermalPowerPlants {
                         isCurrentlyBusy = false;
                         productionEndsAtMillis = 0L;
                         this.currentProductionRequestId = null; // Resetta l'ID della richiesta in produzione
+                        sendAckToRep(productionRequestId); // Invia ACK per la richiesta corretta
                     } else if (isCurrentlyBusy && !requestId.equals(this.currentProductionRequestId)) {
                         // Questo caso si verifica se, nel frattempo, la TPP ha vinto un'altra elezione
                         // e this.currentProductionRequestId è stato sovrascritto.
@@ -992,5 +1004,18 @@ public class ThermalPowerPlants {
 
     public String getRequestIdForCurrentPrice() {
         return this.requestIdForCurrentPrice;
+    }
+
+    public synchronized void markElectionAsConcluded(String requestId) {
+        if (requestId == null) return;
+        boolean added = this.concludedElectionRequestIds.add(requestId);
+        if (added) {
+            System.out.println("TPP " + this.id + ": Marked election for request '" + requestId + "' AS CONCLUDED.");
+        }
+    }
+
+    public synchronized boolean isElectionConcluded(String requestId) {
+        if (requestId == null) return false;
+        return this.concludedElectionRequestIds.contains(requestId);
     }
 }

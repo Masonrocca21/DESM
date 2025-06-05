@@ -127,23 +127,47 @@ public class NetworkManager {
             if(plantInstance != null) {
                 stubToUseForForwarding = plantInstance.getCurrentSuccessorStub();
             }
+        }
 
+        // PRIMO CONTROLLO: L'elezione per questa requestId è già conclusa?
+        if (plantInstance.isElectionConcluded(receivedRequestId)) {
+            System.out.println("NM (" + this.myId + "): Election for request '" + receivedRequestId +
+                    "' ALREADY CONCLUDED (seen Elected). Discarding/Passively forwarding ELECTION msg (candidate " +
+                    receivedMsg.getCandidateId() + ").");
+            // Se non sono io il candidato nel messaggio, potrei inoltrarlo passivamente una volta per sicurezza,
+            // ma idealmente dovrebbe essere assorbito.
+            // Per evitare loop, se il candidato sono io, sicuramente lo scarto.
+            if (receivedMsg.getCandidateId() != this.myId && stubToUseForForwarding != null) {
+                // sendElectionToNext(receivedMsg, stubToUseForForwarding); // Inoltro passivo cauto
+            } else {
+                // Assorbi/scarta il messaggio
+            }
+            return; // Termina l'elaborazione per questa elezione conclusa
         }
 
         // CASO 1: Il messaggio è tornato al suo mittente originale (questa pianta)
         if (receivedMsg.getCandidateId() == this.myId) {
+
+            // Controlla se la TPP si considera ancora attivamente partecipante a QUESTA elezione
+            // OPPURE se il prezzo nel messaggio corrisponde al prezzo con cui ha INIZIATO l'elezione
+            // (anche se ora potrebbe averlo pulito perché si è già dichiarata vincitrice un istante prima)
+            boolean isStillActivelyParticipatingThisRequest = receivedRequestId.equals(plantInstance.getActivelyParticipatingInElectionForRequestId());
+
             // Verifica che il prezzo e la requestId corrispondano a ciò che questa pianta avrebbe inviato.
             // Questo implica che la TPP deve avere un prezzo preparato per questa requestId.
-            if (plantInstance.hasPreparedPriceForRequest(receivedRequestId) &&
+            if (isStillActivelyParticipatingThisRequest && plantInstance.hasPreparedPriceForRequest(receivedRequestId) &&
                     Math.abs(receivedMsg.getCandidateValue() - plantInstance.getCurrentElectionPrice()) < 0.0001) { // Confronto double
 
                 System.out.println("NM (" + this.myId + "): My ELECTION message for request '" + receivedRequestId + "' returned. I am the winner!");
                 participant = false; // Ho vinto
+
+                // Ottieni il prezzo vincente PRIMA di pulirlo!
+                double winningPrice = plantInstance.getCurrentElectionPrice();
+
                 plantInstance.handleElectionWinAndStartProduction(receivedRequestId, receivedKwh);
-                // TPP.electionProcessConcludedForRequest è chiamato da handleElectionWinAndStartProduction
 
                 if (stubToUseForForwarding != null) {
-                    sendElectedToNext(this.myId, plantInstance.getCurrentElectionPrice(), receivedRequestId, receivedKwh, stubToUseForForwarding);
+                    sendElectedToNext(this.myId, winningPrice, receivedRequestId, receivedKwh, stubToUseForForwarding);
                 } else {
                     System.out.println("NM (" + this.myId + "): I won (request '"+receivedRequestId+"'), and I'm the only one. No ELECTED message to send.");
                 }
@@ -165,21 +189,14 @@ public class NetworkManager {
 
         // CASO 2: Determinare se inoltrare passivamente o partecipare attivamente.
         // Condizioni per l'inoltro passivo:
-        System.out.println("NM (" + this.myId + "): PRE-CALL plantInstance.isBusyProducing() for req " + receivedRequestId);
+
         boolean plantIsBusyProducing = plantInstance.isBusyProducing();
-        System.out.println("NM (" + this.myId + "): POST-CALL plantInstance.isBusyProducing(), result: " + plantIsBusyProducing);
-
-        System.out.println("NM (" + this.myId + "): PRE-CALL plantInstance.getActivelyParticipatingInElectionForRequestId() for req " + receivedRequestId);
         String activeReqId = plantInstance.getActivelyParticipatingInElectionForRequestId();
-        System.out.println("NM (" + this.myId + "): POST-CALL plantInstance.getActivelyParticipatingInElectionForRequestId(), result: " + activeReqId);
         boolean plantInDifferentActiveElection = activeReqId != null && !receivedRequestId.equals(activeReqId);
-        System.out.println("NM (" + this.myId + "): plantInDifferentActiveElection: " + plantInDifferentActiveElection);
 
-        System.out.println("NM (" + this.myId + "): PRE-CALL plantInstance.hasPreparedPriceForRequest() for req " + receivedRequestId);
         boolean hasPreparedPrice = plantInstance.hasPreparedPriceForRequest(receivedRequestId);
-        System.out.println("NM (" + this.myId + "): POST-CALL plantInstance.hasPreparedPriceForRequest(), result: " + hasPreparedPrice);
         boolean plantHasNoPriceForThisRequest = !hasPreparedPrice;
-        System.out.println("NM (" + this.myId + "): plantHasNoPriceForThisRequest: " + plantHasNoPriceForThisRequest);
+
 
         if (plantIsBusyProducing || plantInDifferentActiveElection || plantHasNoPriceForThisRequest) {
             String reason = "";
@@ -259,6 +276,7 @@ public class NetworkManager {
 
         participant = false; // L'elezione è finita
         plantInstance.electionProcessConcludedForRequest(requestId);
+        plantInstance.markElectionAsConcluded(requestId);
 
         PlantServiceGrpc.PlantServiceBlockingStub stubToUseForForwarding = null;
         if (plantInstance != null) {
@@ -282,7 +300,7 @@ public class NetworkManager {
         }
     }
 
-    private synchronized void sendElectionToNext(ElectionMessage msgToSend, PlantServiceGrpc.PlantServiceBlockingStub stubToUse) {
+    private void sendElectionToNext(ElectionMessage msgToSend, PlantServiceGrpc.PlantServiceBlockingStub stubToUse) {
 
         if (stubToUse == null) {
             System.err.println("NetworkManager (Plant " + this.myId + "): Cannot send ELECTION, successorStub is null.");
@@ -307,7 +325,7 @@ public class NetworkManager {
     }
 
     // Modificato per includere anche il winnerValue
-    private synchronized void sendElectedToNext(int winnerId, double winnerValue, String requestId, double kwh, PlantServiceGrpc.PlantServiceBlockingStub stubToUse) {
+    private void sendElectedToNext(int winnerId, double winnerValue, String requestId, double kwh, PlantServiceGrpc.PlantServiceBlockingStub stubToUse) {
 
         if (stubToUse == null) {
             System.err.println("NetworkManager (Plant " + this.myId + "): Cannot send ELECTED, successorStub is null.");
