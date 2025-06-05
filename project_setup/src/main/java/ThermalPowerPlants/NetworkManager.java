@@ -1,48 +1,25 @@
 package ThermalPowerPlants;
 
-import com.example.powerplants.EnergyRequest;
-import com.example.powerplants.EnergyResponse;
 import com.example.powerplants.PlantServiceGrpc;
 import com.example.powerplants.ElectionMessage;
 import com.example.powerplants.ElectedMessage;
 import io.grpc.ManagedChannel;
-import ThermalPowerPlants.ThermalPowerPlants;
-
-import java.util.*;
 
 public class NetworkManager {
     private final int myId;
-    private double myValue; // es. livello di inquinamento, o energia disponibile
-
-    private volatile PlantServiceGrpc.PlantServiceBlockingStub successorStub;
-    private volatile ManagedChannel successorChannel;
     private boolean participant = false;
     private final ThermalPowerPlants plantInstance;
-    private double currentElectionKWh;
-
 
     public NetworkManager(ThermalPowerPlants plantOwner, int myId, double myValue,
                            PlantServiceGrpc.PlantServiceBlockingStub stub, ManagedChannel channel ) {
         this.myId = myId;
-        this.myValue = myValue;
-        this.successorStub = stub;
-        this.successorChannel = channel;
         this.plantInstance = plantOwner;
 
-        System.out.println("NetworkManager (Plant " + this.myId + ") CONSTRUCTOR: this.successorStub is null? " + (this.successorStub == null) + " (Passed stub was null? " + (stub == null) + ")");
-
-
-        // Verifica che lo stub del successore sia fornito se c'è un canale
-        if (this.successorChannel != null && this.successorStub == null) {
-            System.err.println("NetworkManager (Plant " + this.myId + "): Warning - Successor channel is provided but stub is null.");
-            // Potrebbe essere un problema, ma non fatale se la pianta è l'unica.
-        }
-        if (this.successorChannel == null && this.successorStub != null) {
-            System.err.println("NetworkManager (Plant " + this.myId + "): Warning - Successor stub is provided but channel is null.");
-        }
+        System.out.println("NetworkManager (Plant " + this.myId + ") CONSTRUCTOR. Will fetch stub from TPP.");
 
     }
-    public synchronized void updateSuccessor(PlantServiceGrpc.PlantServiceBlockingStub newSuccessorStub,
+
+    /* public synchronized void updateSuccessor(PlantServiceGrpc.PlantServiceBlockingStub newSuccessorStub,
                                 ManagedChannel newSuccessorChannel) {
         System.out.println("NetworkManager (Plant " + this.myId + "): Updating successor");
 
@@ -61,40 +38,62 @@ public class NetworkManager {
         System.out.println("NetworkManager (Plant " + this.myId + "): Successor updated successfully");
     }
 
-    public void startElection(double kWh) {
-        if (this.successorStub == null) {
-            System.out.println("NetworkManager (Plant " + this.myId + "): Cannot start election, no successor defined. Am I alone?");
-            // Se sono solo, potrei auto-eleggermi (se la logica lo prevede)
-            handleSelfElection();
-            return;
-        }
+     */
 
-        // ...
+    public void startElection(String requestID, double kWh) {
+
+        PlantServiceGrpc.PlantServiceBlockingStub currentStub = null;
+
         if (this.plantInstance != null && !this.plantInstance.isReadyForElection()){
             System.out.println("NetworkManager (Plant " + this.myId + "): Plant is not generally ready for election logic yet. Aborting startElection.");
             return;
         }
 
-        this.currentElectionKWh = kWh;
+        if (requestID == null || requestID.isEmpty()) {
+            System.err.println("NetworkManager (Plant " + this.myId + "): ERROR - Attempting to start election with no currentRequestId set!");
+            return;
+        }
+
+        if (!plantInstance.hasPreparedPriceForRequest(requestID)) {
+            System.err.println("NM (" + this.myId + "): CRITICAL - TPP has not prepared a price for request '" + requestID + "'. Aborting startElection.");
+            // Questo indica un problema nel flusso logico se accade.
+            return;
+        }
+        double myValue = plantInstance.getCurrentElectionPrice(); // Prende il prezzo dalla TPP
+
+        if (plantInstance != null) {
+            currentStub = plantInstance.getCurrentSuccessorStub(); // Metodo synchronized in TPP
+        }
+
+        if (currentStub == null) {
+            System.out.println("NetworkManager (Plant " + this.myId + "): Cannot start election, no successor defined. Am I alone?");
+            // Se sono solo, potrei auto-eleggermi (se la logica lo prevede)
+            handleSelfElection(requestID, kWh, myValue);
+            return;
+        }
+
         this.participant = true; // Questo 'participant' è specifico del NetworkManager per l'elezione corrente
 
         ElectionMessage msg = ElectionMessage.newBuilder()
-                .setInitiatorId(myId)
                 .setCandidateId(myId)
                 .setCandidateValue(myValue)
+                .setCurrentElectionRequestId(requestID) // Usa il requestId passato
+                .setRequiredKwh(kWh)                  // Imposta il nuovo campo kWh
                 .build();
 
         System.out.println("NetworkManager (Plant " + this.myId + "): Starting election with my value " + myValue);
-        sendElectionToNext(msg);
+        sendElectionToNext(msg, currentStub);
     }
 
-    public void handleSelfElection() {
+    public void handleSelfElection(String requestId, double kWh, double myValue) {
         System.out.printf("Pianta %d si autoproclama vincitrice (valore %.3f)%n", myId, myValue);
         participant = false;
 
         ElectedMessage msg = ElectedMessage.newBuilder()
                 .setWinnerId(myId)
                 .setWinnerValue(myValue)
+                .setCurrentElectionRequestId(requestId)
+                .setRequiredKwh(kWh) // Imposta il nuovo campo
                 .build();
 
         // chiama direttamente il metodo come se avesse ricevuto Elected
@@ -103,12 +102,15 @@ public class NetworkManager {
 
     public void onElectionMessage(ElectionMessage receivedMsg) {
 
+        String receivedRequestId = receivedMsg.getCurrentElectionRequestId();
+        double receivedKwh = receivedMsg.getRequiredKwh(); // Prendi kWh dal messaggio
+
         System.out.println("NetworkManager (Plant " + this.myId + "): Received election message. Candidate: " +
                 receivedMsg.getCandidateId() + " with value " + receivedMsg.getCandidateValue());
 
         try {
             // DELAY SIMULATO
-            long processingDelay = 2000 + (long)(Math.random() * 2000); // Delay tra 30 e 180 ms
+            long processingDelay = 30 + (long)(Math.random() * 150); // Delay tra 30 e 180 ms
             System.out.println("NetworkManager (Plant " + this.myId + "): Simulating processing delay of " + processingDelay + "ms for received ELECTION from candidate " + receivedMsg.getCandidateId());
             Thread.sleep(processingDelay);
         } catch (InterruptedException e) {
@@ -116,130 +118,159 @@ public class NetworkManager {
             System.err.println("NetworkManager (Plant " + this.myId + "): Sleep interrupted during ELECTION processing.");
         }
 
-        // Stato della pianta proprietaria
-        boolean isOwningPlantBusy = false;
-        if (this.plantInstance != null) {
-            isOwningPlantBusy = this.plantInstance.isBusyProducing();
-        } else {
-            System.err.println("NetworkManager (Plant " + this.myId + "): plantInstance is null in onElectionMessage!");
-            // In questo caso, non possiamo determinare lo stato busy. Per sicurezza, non partecipiamo attivamente.
-            // Ma dobbiamo comunque provare a inoltrare se abbiamo uno stub.
-        }
-
         // Cattura lo stub e le info del successore in modo sincronizzato
         // Questo è importante per mitigare il CANCELLED error, come discusso prima
-        PlantServiceGrpc.PlantServiceBlockingStub stubToUseForForwarding;
+        PlantServiceGrpc.PlantServiceBlockingStub stubToUseForForwarding = null;
         ManagedChannel channelInUseForForwarding;
 
         synchronized (this) { // Sincronizza l'accesso allo stato del successore
-            stubToUseForForwarding = this.successorStub;
-            channelInUseForForwarding = this.successorChannel;
-        }
-
-        if (stubToUseForForwarding == null) {
-            System.out.println("NetworkManager (Plant " + this.myId + "): No successor. Assuming I am the candidate " +
-                    receivedMsg.getCandidateId() + " if IDs match, or the winner if the message originated from me.");
-            // Se il messaggio è tornato a chi lo ha inviato e non ci sono altri, è il vincitore.
-            // La logica di Chang & Roberts prevede che il messaggio giri. Se torna all'ID del candidato
-            // nel messaggio E sono io, allora ho vinto.
-            if (receivedMsg.getCandidateId() == this.myId) {
-                System.out.println("NetworkManager (Plant " + this.myId + "): Election message returned to me. I ("+this.myId+") am the winner with value " + this.myValue);
-                participant = false;
-                sendElectedToNext(this.myId, this.myValue); // Invia il messaggio di eletto
-            } else {
-                // C'è un candidato migliore di me, ma non posso inoltrare.
-                // Questo caso è strano in un anello funzionante. Potrebbe significare che sono l'ultimo
-                // e il candidato è qualcun altro. L'elezione si concluderà quando il messaggio ELECTED girerà.
-                System.out.println("NetworkManager (Plant " + this.myId + "): Received election for " + receivedMsg.getCandidateId() + " but no successor to forward.");
-                // Potrei diventare non partecipante se il candidato è migliore
-                if (receivedMsg.getCandidateValue() < this.myValue ||
-                        (receivedMsg.getCandidateValue() == this.myValue && receivedMsg.getCandidateId() < this.myId)) { // Attenzione alla logica < vs > ID
-                    participant = false;
-                }
+            if(plantInstance != null) {
+                stubToUseForForwarding = plantInstance.getCurrentSuccessorStub();
             }
-            return;
+
         }
 
-        // Logica di Chang & Roberts:
-        // 1. Se il CandidateID nel messaggio è il mio ID, allora il mio messaggio ha fatto il giro
-        //    e nessun altro era migliore. Io sono l'eletto.
+        // CASO 1: Il messaggio è tornato al suo mittente originale (questa pianta)
         if (receivedMsg.getCandidateId() == this.myId) {
-            System.out.println("NetworkManager (Plant " + this.myId + "): My election message returned. I am the winner!");
-            participant = false; // Ho vinto
+            // Verifica che il prezzo e la requestId corrispondano a ciò che questa pianta avrebbe inviato.
+            // Questo implica che la TPP deve avere un prezzo preparato per questa requestId.
+            if (plantInstance.hasPreparedPriceForRequest(receivedRequestId) &&
+                    Math.abs(receivedMsg.getCandidateValue() - plantInstance.getCurrentElectionPrice()) < 0.0001) { // Confronto double
 
-            // ----- CHIAMATA A handleElectionWinAndStartProduction -----
-            if (this.plantInstance != null) { // plantInstance è il riferimento a ThermalPowerPlants
-                this.plantInstance.handleElectionWinAndStartProduction(this.currentElectionKWh);
+                System.out.println("NM (" + this.myId + "): My ELECTION message for request '" + receivedRequestId + "' returned. I am the winner!");
+                participant = false; // Ho vinto
+                plantInstance.handleElectionWinAndStartProduction(receivedRequestId, receivedKwh);
+                // TPP.electionProcessConcludedForRequest è chiamato da handleElectionWinAndStartProduction
+
+                if (stubToUseForForwarding != null) {
+                    sendElectedToNext(this.myId, plantInstance.getCurrentElectionPrice(), receivedRequestId, receivedKwh, stubToUseForForwarding);
+                } else {
+                    System.out.println("NM (" + this.myId + "): I won (request '"+receivedRequestId+"'), and I'm the only one. No ELECTED message to send.");
+                }
+                return;
             } else {
-                System.err.println("NetworkManager (Plant " + this.myId + "): CRITICAL - plantInstance is null, cannot start production for win!");
+                System.out.println("NM (" + this.myId + "): Received ELECTION with my ID ("+this.myId+") for request '"+receivedRequestId +
+                        "' but current price/requestId in TPP (" + String.format("%.3f", plantInstance.getCurrentElectionPrice()) + " for '" + plantInstance.getRequestIdForCurrentPrice() +
+                        "') does not match message value ("+ String.format("%.3f", receivedMsg.getCandidateValue()) +"). Forwarding as is.");
+                // Questo scenario è insolito se la logica di TPP è corretta. Potrebbe essere un messaggio vecchio.
+                if (stubToUseForForwarding != null) {
+                    sendElectionToNext(receivedMsg, stubToUseForForwarding);
+                } else {
+                    System.err.println("NM (" + this.myId + "): ELECTION for me ("+this.myId+", req '"+receivedRequestId+
+                            "') with mismatch, and no successor. Election potentially stuck.");
+                }
+                return;
             }
-            // ---------------------------------------------------------
+        }
 
+        // CASO 2: Determinare se inoltrare passivamente o partecipare attivamente.
+        // Condizioni per l'inoltro passivo:
+        System.out.println("NM (" + this.myId + "): PRE-CALL plantInstance.isBusyProducing() for req " + receivedRequestId);
+        boolean plantIsBusyProducing = plantInstance.isBusyProducing();
+        System.out.println("NM (" + this.myId + "): POST-CALL plantInstance.isBusyProducing(), result: " + plantIsBusyProducing);
 
-            // Invio il messaggio ELECTED
-            sendElectedToNext(this.myId, this.myValue); // Devo passare anche il valore del vincitore
+        System.out.println("NM (" + this.myId + "): PRE-CALL plantInstance.getActivelyParticipatingInElectionForRequestId() for req " + receivedRequestId);
+        String activeReqId = plantInstance.getActivelyParticipatingInElectionForRequestId();
+        System.out.println("NM (" + this.myId + "): POST-CALL plantInstance.getActivelyParticipatingInElectionForRequestId(), result: " + activeReqId);
+        boolean plantInDifferentActiveElection = activeReqId != null && !receivedRequestId.equals(activeReqId);
+        System.out.println("NM (" + this.myId + "): plantInDifferentActiveElection: " + plantInDifferentActiveElection);
+
+        System.out.println("NM (" + this.myId + "): PRE-CALL plantInstance.hasPreparedPriceForRequest() for req " + receivedRequestId);
+        boolean hasPreparedPrice = plantInstance.hasPreparedPriceForRequest(receivedRequestId);
+        System.out.println("NM (" + this.myId + "): POST-CALL plantInstance.hasPreparedPriceForRequest(), result: " + hasPreparedPrice);
+        boolean plantHasNoPriceForThisRequest = !hasPreparedPrice;
+        System.out.println("NM (" + this.myId + "): plantHasNoPriceForThisRequest: " + plantHasNoPriceForThisRequest);
+
+        if (plantIsBusyProducing || plantInDifferentActiveElection || plantHasNoPriceForThisRequest) {
+            String reason = "";
+            if (plantIsBusyProducing) reason += "plant is busy producing (for '" + plantInstance.currentProductionRequestId + "'); ";
+            if (plantInDifferentActiveElection) reason += "plant actively in different election ('" + plantInstance.getActivelyParticipatingInElectionForRequestId() + "'); ";
+            if (plantHasNoPriceForThisRequest) reason += "plant has no price prepared for this request ('" + receivedRequestId + "'); ";
+
+            System.out.println("NM (" + this.myId + "): Forwarding ELECTION (candidate " + receivedMsg.getCandidateId() +
+                    ", req '" + receivedRequestId + "') as is because: " + reason.trim());
+            participant = false; // Non partecipo attivamente a questa tornata
+
+            if (stubToUseForForwarding != null) {
+                sendElectionToNext(receivedMsg, stubToUseForForwarding);
+            } else {
+                System.out.println("NM (" + this.myId + "): Was to forward ELECTION for req '"+receivedRequestId +
+                        "' (candidate "+receivedMsg.getCandidateId()+") due to: " + reason.trim() +
+                        " but NO SUCCESSOR. Election may be stuck if this node isn't the intended winner.");
+            }
             return;
         }
 
-        // Determina se questa pianta DEVE solo inoltrare o può partecipare attivamente
-        // Una pianta nuova o non ancora completamente inizializzata per le elezioni (dal punto di vista di questo NM)
-        // potrebbe non avere this.currentElectionRequestId impostato per la richiesta ricevuta,
-        // o this.participant potrebbe essere false.
-        boolean shouldOnlyForward = false;
-        String forwardReason = "";
+        // CASO 3: Partecipazione attiva.
+        // La pianta non è busy, non è in un'altra elezione, e HA un prezzo per questa requestId.
+        // Assicura che la TPP sia marcata come partecipante attiva per QUESTA elezione.
+        // (TPP.prepareForNewElection dovrebbe averlo già fatto, ma una chiamata qui è una salvaguardia).
+        System.out.println("NM (" + this.myId + "): Entering CASO 3 for req " + receivedRequestId);
+        System.out.println("NM (" + this.myId + "): PRE-CALL plantInstance.startedActiveParticipationInElection() for req " + receivedRequestId);
+        plantInstance.startedActiveParticipationInElection(receivedRequestId);
+        System.out.println("NM (" + this.myId + "): POST-CALL plantInstance.startedActiveParticipationInElection()");
 
-        if (isOwningPlantBusy) {
-            shouldOnlyForward = true;
-            forwardReason = "owning plant is busy";
-        }
-
-
-        if (shouldOnlyForward) {
-            System.out.println("NetworkManager (Plant " + this.myId + "): Forwarding ELECTION for request '" +
-                    receivedMsg.getInitiatorId() + "' as is (candidate " + receivedMsg.getCandidateId() +
-                    ") because " + forwardReason + ".");
-            sendElectionToNext(receivedMsg); // Inoltra il messaggio. sendElectionToNext usa lo stub corrente.
-            return;
-        }
-
-        // Se arrivo qui, NON sono occupato E STO attivamente partecipando.
-        // Quindi, confronto la mia offerta.
-
-        boolean iAmBetterCandidate = this.myValue < receivedMsg.getCandidateValue() ||
-                (this.myValue == receivedMsg.getCandidateValue() && this.myId > receivedMsg.getCandidateId());
+        System.out.println("NM (" + this.myId + "): PRE-CALL plantInstance.getCurrentElectionPrice() for req " + receivedRequestId);
+        double myCurrentPriceForThisRequest = plantInstance.getCurrentElectionPrice();
+        System.out.println("NM (" + this.myId + "): POST-CALL plantInstance.getCurrentElectionPrice(), result: " + myCurrentPriceForThisRequest);
 
         ElectionMessage messageToForward;
+        // Logica di Chang & Roberts: miglior candidato ha il valore più basso (prezzo),
+        // e in caso di parità, l'ID più alto.
+        boolean iAmBetterCandidate = myCurrentPriceForThisRequest < receivedMsg.getCandidateValue() ||
+                (Math.abs(myCurrentPriceForThisRequest - receivedMsg.getCandidateValue()) < 0.0001 && this.myId > receivedMsg.getCandidateId());
 
         if (iAmBetterCandidate) {
-            System.out.println("NetworkManager (Plant " + this.myId + "): My value " + this.myValue + " is better. Becoming candidate.");
-            messageToForward = ElectionMessage.newBuilder(receivedMsg) // Copia i campi non modificati (es. requestId se presente)
+            System.out.println("NM (" + this.myId + "): My price " + String.format("%.3f", myCurrentPriceForThisRequest) +
+                    " for request '" + receivedRequestId + "' is better. Becoming candidate.");
+            messageToForward = ElectionMessage.newBuilder(receivedMsg) // Copia requestId e kWh
                     .setCandidateId(this.myId)
-                    .setCandidateValue(this.myValue)
+                    .setCandidateValue(myCurrentPriceForThisRequest)
                     .build();
-            participant = true; // Sto partecipando attivamente
+            participant = true; // NM si considera partecipante attivo
         } else {
-            System.out.println("NetworkManager (Plant " + this.myId + "): Candidate " + receivedMsg.getCandidateId() +
-                    " (value " + receivedMsg.getCandidateValue() + ") is better or equal. Forwarding.");
-            messageToForward = receivedMsg; // Inoltro il messaggio così com'è
-            participant = false; // Non sono più un partecipante attivo se c'è un candidato migliore
+            System.out.println("NM (" + this.myId + "): Candidate " + receivedMsg.getCandidateId() +
+                    " (price " + String.format("%.3f", receivedMsg.getCandidateValue()) + ") for request '" + receivedRequestId +
+                    "' is better or equal. Forwarding.");
+            messageToForward = receivedMsg; // Inoltra il messaggio del candidato migliore
+            participant = false; // NM non è più il candidato attivo per questa tornata
+            // Non chiamo TPP.electionProcessConcludedForRequest qui, l'elezione non è finita.
         }
-        sendElectionToNext(messageToForward);
+
+        if (stubToUseForForwarding != null) {
+            sendElectionToNext(messageToForward, stubToUseForForwarding);
+        } else {
+            // Se non c'è successore e non sono il vincitore (il CASO 1 non è scattato), l'elezione è bloccata.
+            // Questo non dovrebbe accadere in un anello con >1 nodo se il CASO 1 è corretto.
+            // Se sono l'unico nodo, il CASO 1 o handleSelfElection dovrebbero coprirlo.
+            System.err.println("NM (" + this.myId + "): Processed ELECTION for req '"+receivedRequestId+"', result: candidate " +
+                    messageToForward.getCandidateId() + ", but NO SUCCESSOR to forward to. Election may be stuck.");
+        }
     }
 
 
     public void onElectedMessage(ElectedMessage electedMsg) {
         int winnerId = electedMsg.getWinnerId();
         double winnerValue = electedMsg.getWinnerValue(); // Recupera anche il valore del vincitore
+        String requestId = electedMsg.getCurrentElectionRequestId();
+        double kwh = electedMsg.getRequiredKwh(); // Prendi kWh dal messaggio
+
         System.out.println("NetworkManager (Plant " + this.myId + "): Received ELECTED message. Winner: " + winnerId + " with value " + winnerValue);
 
         participant = false; // L'elezione è finita
+        plantInstance.electionProcessConcludedForRequest(requestId);
+
+        PlantServiceGrpc.PlantServiceBlockingStub stubToUseForForwarding = null;
+        if (plantInstance != null) {
+            stubToUseForForwarding = plantInstance.getCurrentSuccessorStub();
+        }
 
         // Qui dovresti salvare chi è il vincitore e il suo valore se necessario per la TPP
         // es. this.thermalPowerPlantInstance.setElectionWinner(winnerId, winnerValue);
 
         if (winnerId != this.myId) { // Se non sono io il vincitore
-            if (this.successorStub != null) { // E ho un successore a cui inoltrare
-                sendElectedToNext(winnerId, winnerValue); // Inoltro il messaggio ELECTED
+            if (stubToUseForForwarding != null) { // E ho un successore a cui inoltrare
+                sendElectedToNext(winnerId, winnerValue, requestId, kwh, stubToUseForForwarding); // Inoltro il messaggio ELECTED
             } else {
                 System.out.println("NetworkManager (Plant " + this.myId + "): I am not the winner, but no successor to forward ELECTED message.");
                 // Questo significa che il messaggio ha fatto il giro e io sono l'ultimo a riceverlo
@@ -251,15 +282,7 @@ public class NetworkManager {
         }
     }
 
-    private void sendElectionToNext(ElectionMessage msgToSend) {
-        PlantServiceGrpc.PlantServiceBlockingStub stubToUse;
-        ManagedChannel channelToUse;
-
-        // Blocco sincronizzato per leggere lo stato corrente del successore
-        synchronized (this) {
-            stubToUse = this.successorStub;
-            channelToUse = this.successorChannel;
-        }
+    private synchronized void sendElectionToNext(ElectionMessage msgToSend, PlantServiceGrpc.PlantServiceBlockingStub stubToUse) {
 
         if (stubToUse == null) {
             System.err.println("NetworkManager (Plant " + this.myId + "): Cannot send ELECTION, successorStub is null.");
@@ -276,37 +299,15 @@ public class NetworkManager {
 
             stubToUse.sendElection(msgToSend); // Usa lo stub del successore fornito
         } catch (Exception e) {
-            if (e instanceof io.grpc.StatusRuntimeException) {
-                io.grpc.StatusRuntimeException sre = (io.grpc.StatusRuntimeException) e;
-                if (sre.getStatus().getCode() == io.grpc.Status.Code.UNAVAILABLE ||
-                        sre.getStatus().getCode() == io.grpc.Status.Code.CANCELLED) {
-                    System.err.println("NetworkManager (Plant " + this.myId + "): ELECTION to successor FAILED (" + sre.getStatus().getCode() + "). " +
-                            "Channel used: " + channelToUse +
-                            ". Successor might have changed or channel was closed. Msg: " + sre.getMessage());
-                    // QUI: Potresti voler controllare se this.successorChannel (quello attuale) è diverso da channelSnapshot.
-                    // Se sì, il successore è cambiato. Potresti ritentare con il nuovo successore (con cautela per evitare loop).
-                    // Per ora, logghiamo solo l'errore.
-                    synchronized(this) {
-                        if (this.successorChannel != channelToUse) {
-                            System.err.println("NetworkManager (Plant " + this.myId + "): Successor has changed since attempting to send. New successor ID: ");
-                        }
-                    }
-                    return; // Non tentare più su questo canale/stub
-                }
-            }
-            System.err.println("NetworkManager (Plant " + this.myId + "): Generic error sending Election to successor " +
-                     ": " + e.getMessage());
+            // Gestione più specifica delle eccezioni gRPC se necessario
+            System.err.println("NM (" + this.myId + "): Error sending ELECTION for req '" + msgToSend.getCurrentElectionRequestId() +
+                    "' to successor: " + e.getMessage());
+            // Considerare una logica di fallback o notifica alla TPP se l'invio fallisce ripetutamente.
         }
     }
 
     // Modificato per includere anche il winnerValue
-    private void sendElectedToNext(int winnerId, double winnerValue) {
-        PlantServiceGrpc.PlantServiceBlockingStub stubToUse;
-
-        // Blocco sincronizzato per leggere lo stato corrente del successore
-        synchronized (this) {
-            stubToUse = this.successorStub;
-        }
+    private synchronized void sendElectedToNext(int winnerId, double winnerValue, String requestId, double kwh, PlantServiceGrpc.PlantServiceBlockingStub stubToUse) {
 
         if (stubToUse == null) {
             System.err.println("NetworkManager (Plant " + this.myId + "): Cannot send ELECTED, successorStub is null.");
@@ -315,7 +316,9 @@ public class NetworkManager {
         try {
             ElectedMessage electedMsgToSend = ElectedMessage.newBuilder()
                     .setWinnerId(winnerId)
-                    .setWinnerValue(winnerValue) // Includi il valore del vincitore nel messaggio
+                    .setWinnerValue(winnerValue)
+                    .setCurrentElectionRequestId(requestId)
+                    .setRequiredKwh(kwh) // Includi kWh
                     .build();
             // Assicurati che il tuo servizio gRPC abbia un metodo 'sendElected'.
             System.out.println("NetworkManager (Plant " + this.myId + "): Sending ELECTED to successor " +
@@ -327,16 +330,4 @@ public class NetworkManager {
         }
     }
 
-    public void setValue(double value) {
-        this.myValue = value;
-        System.out.println("NetworkManager (Plant " + this.myId + "): My election value updated to " + value);
-    }
-
-    public boolean isParticipant() {
-        return participant;
-    }
-
-    public void setCurrentElectionKWh(double kWh) {
-        this.currentElectionKWh = kWh;
-    }
 }

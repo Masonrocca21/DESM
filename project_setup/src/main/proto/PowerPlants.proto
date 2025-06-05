@@ -38,12 +38,15 @@ message Ack {
 }
 
 message ElectionMessage {
-    int32 initiatorId = 1;
-    int32 candidateId = 2;       // chi è il migliore finora
-    double candidateValue = 3;    // valore (es. inquinamento o energia disponibile)
+    int32 candidateId = 1;       // chi è il migliore finora
+    double candidateValue = 2;    // valore (es. inquinamento o energia disponibile)
+    string currentElectionRequestId = 3;
+    double requiredKwh = 4;
 }
 
 message ElectedMessage {
     int32 winnerId = 1;
     double winnerValue = 2;
+    string currentElectionRequestId = 3;
+    double requiredKwh = 4;
 }

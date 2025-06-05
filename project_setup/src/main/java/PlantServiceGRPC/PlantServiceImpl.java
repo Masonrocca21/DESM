@@ -19,7 +19,7 @@ public class PlantServiceImpl extends PlantServiceGrpc.PlantServiceImplBase {
     public PlantServiceImpl(ThermalPowerPlants plant) {
         this.plant = plant;
     }
-    @Override
+    /* @Override
     public void handleEnergyRequest(EnergyRequest request, StreamObserver<EnergyResponse> responseObserver) {
         // Logica per decidere se soddisfare la richiesta
         int requiredEnergy = request.getRequiredEnergy();
@@ -39,6 +39,8 @@ public class PlantServiceImpl extends PlantServiceGrpc.PlantServiceImplBase {
         responseObserver.onNext(response);
         responseObserver.onCompleted();
     }
+
+     */
     @Override
     public void sendElection(ElectionMessage request, StreamObserver<Ack> responseObserver) {
 

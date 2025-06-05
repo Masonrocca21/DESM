@@ -3,6 +3,7 @@ package server;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -57,7 +58,7 @@ public class AdministratorController {
         return ResponseEntity.ok("Ecco la lista: " + administrator.getThermalPlants().toString());
     }
 
-    @GetMapping(value = "/getPollutionStats/{t1_ms}/{t2_ms}", produces = "text/plain")
+    @GetMapping(value = "/getPollution/{t1_ms}/{t2_ms}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Map<String, Object>> getPollutionStatistics( // CAMBIA TIPO DI RITORNO
                                                                        @PathVariable("t1_ms") long timeA_milliseconds,
                                                                        @PathVariable("t2_ms") long timeB_milliseconds) {

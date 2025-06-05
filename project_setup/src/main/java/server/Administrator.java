@@ -14,6 +14,10 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence; // Aggiunto
 
 import javax.annotation.PostConstruct;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.json.JSONException;
+
 
 @Service //Spring automatically makes this class a singleton bean
 public class Administrator {
@@ -66,63 +70,67 @@ public class Administrator {
                 @Override
                 public void messageArrived(String topic, MqttMessage message) throws Exception {
                     System.out.println("AdminServer: MQTT received message: " + new String(message.getPayload()));
-                    String payloadStr = new String(message.getPayload());
-                    System.out.println("AdminServer (Callback): Received MQTT message on topic '" + topic + "': " +
-                            payloadStr.substring(0, Math.min(150, payloadStr.length())) + // Logga solo una parte per brevità
-                            (payloadStr.length() > 150 ? "..." : ""));
+                    String payloadStr = new String(message.getPayload()); // Ottieni la stringa JSON completa
+
                     try {
-                        // ----- PARSING MANUALE DELLA STRINGA PAYLOAD -----
-                        // Formato atteso: "plantId=<ID>;timestamp=<TS>;averagesCO2=<avg1>,<avg2>,..."
+                        // ----- USA DIRETTAMENTE org.json.JSONObject PER PARSARE L'INTERA STRINGA -----
+                        JSONObject payloadJson = new JSONObject(payloadStr);
+
                         int plantId = -1;
                         long submissionTimestamp = -1L;
                         List<Double> averages = new ArrayList<>();
 
-                        String content = payloadStr.trim();
-                        if (content.startsWith("{") && content.endsWith("}")) {
-                            content = content.substring(1, content.length() - 1);
+                        if (payloadJson.has("plantId")) {
+                            plantId = payloadJson.getInt("plantId");
                         } else {
-                            throw new IllegalArgumentException("String is not a valid JSON-like object structure");
+                            System.err.println("AdminServer: Payload missing 'plantId'");
+                            return; // O gestisci l'errore diversamente
                         }
 
-                        String[] mainParts = content.split(",");
-                        for (String part : mainParts) {
-                            String[] keyValue = part.split(":", 2); // Splitta solo al primo '='
-                            if (keyValue.length == 2) {
-                                String key = keyValue[0].replace("\"", "").trim();;
-                                String value = keyValue[1].trim();
 
-                                if (key.equals("plantId")) {
-                                    plantId = Integer.parseInt(value);
-                                } else if (key.equals("timestamp")) {
-                                    submissionTimestamp = Long.parseLong(value);
-                                } else if (key.equals("averagesCO2")) {
-                                    if (value.startsWith("[") && value.endsWith("]")) {
-                                        String arrayContent = value.substring(1, value.length() - 1);
-                                        if (!arrayContent.isEmpty()) { // Controlla se ci sono medie
-                                            String[] avgStrings = arrayContent.split(",");
-                                            for (String avgStr : avgStrings) {
-                                                try {
-                                                    averages.add(Double.parseDouble(avgStr.trim()));
-                                                } catch (NumberFormatException e) {
-                                                    System.err.println("AdminServer: Could not parse average value '" + avgStr + "'");
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        System.err.println("AdminServer: Malformed averagesCO2 array string: " + value);
+                        if (payloadJson.has("timestamp")) {
+                            submissionTimestamp = payloadJson.getLong("timestamp");
+                        } else {
+                            System.err.println("AdminServer: Payload missing 'timestamp'");
+                            return;
+                        }
+
+
+                        if (payloadJson.has("averagesCO2")) {
+                            JSONArray averagesJsonArray = payloadJson.getJSONArray("averagesCO2");
+
+                            for (int i = 0; i < averagesJsonArray.length(); i++) {
+                                try {
+                                    // JSONArray.getDouble() gestisce correttamente i numeri
+                                    averages.add(averagesJsonArray.getDouble(i));
+                                } catch (org.json.JSONException e_num) {
+                                    // Fallback se per qualche motivo fossero stringhe nell'array JSON,
+                                    // anche se il tuo codice client li invia come numeri formattati.
+                                    try {
+                                        averages.add(Double.parseDouble(averagesJsonArray.getString(i)));
+                                    } catch (NumberFormatException e_str) {
+                                        System.err.println("AdminServer: Could not parse average value from JSONArray: '" + averagesJsonArray.get(i) + "' - " + e_str.getMessage());
                                     }
                                 }
-                            } else {
-                                System.err.println("AdminServer: Malformed key-value pair: " + part);
                             }
+                        } else {
+                            System.err.println("AdminServer: Payload missing 'averagesCO2' array.");
+                            // Potrebbe essere un messaggio valido senza medie, gestisci come appropriato
                         }
-                        // ----------------------------------------------------
+                        // --------------------------------------------------------------------------
 
-                        recordPollutionData(plantId, submissionTimestamp, averages);
+                        if (plantId != -1 && submissionTimestamp != -1L) { // Controlla che i campi chiave siano stati parsati
+                            recordPollutionData(plantId, submissionTimestamp, averages);
+                        } else {
+                            System.err.println("AdminServer: Critical data (plantId or timestamp) missing after parsing. Payload: " + payloadStr);
+                        }
 
-                    } catch (Exception e) {
-                        System.err.println("AdminServer: Error parsing MQTT JSON payload: '" + payloadStr + "'");
-                        e.printStackTrace(); // Stampa lo stack trace per debug
+                    } catch (org.json.JSONException e_json) { // Cattura specificamente le eccezioni di parsing JSON
+                        System.err.println("AdminServer: Error parsing MAIN JSON payload: '" + payloadStr + "' - " + e_json.getMessage());
+                        // e_json.printStackTrace(); // Utile per debug
+                    } catch (Exception e) { // Cattura altre eccezioni impreviste
+                        System.err.println("AdminServer: Unexpected error processing MQTT message: '" + payloadStr + "'");
+                        e.printStackTrace();
                     }
                 }
 

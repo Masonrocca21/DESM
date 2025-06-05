@@ -6,6 +6,7 @@ import org.eclipse.paho.client.mqttv3.*;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -22,6 +23,7 @@ import PlantServiceGRPC.PlantServiceImpl;
 import Simulators.PollutionSensor;
 import PollutionManagement.SlidingWindowBuffer;
 
+import org.json.JSONObject;
 import org.springframework.http.*;
 import org.springframework.web.client.RestTemplate;
 
@@ -32,6 +34,7 @@ public class ThermalPowerPlants {
     private String serverAddress = "http://localhost:8080";
     private Server grpcServer;
     private volatile boolean isShutdownInitiated = false; // Per evitare chiamate multiple a shutdown
+    volatile String currentProductionRequestId;
 
 
     private boolean isActive;
@@ -43,19 +46,22 @@ public class ThermalPowerPlants {
     private final Map<Integer, PlantServiceGrpc.PlantServiceBlockingStub> connections = new HashMap<>();
     private Map<Integer, ManagedChannel> channels = new HashMap<>();
     public ManagedChannel successorChannel;
-    private  PlantServiceGrpc.PlantServiceBlockingStub successorStub;
+    private PlantServiceGrpc.PlantServiceBlockingStub successorStub;
     private Map<Integer, String> topology = new HashMap<>();
     private MqttClient mqttClient;
     private static String broker = "tcp://localhost:1883";
-    private final String energyRequestTopic = "home/renewableEnergyProvider/power";
+    private final String energyRequestTopic = "home/renewableEnergyProvider/power/new";
 
     private static final RestTemplate restTemplate = new RestTemplate();
-
-    private double myEnegyValue; //Prezzo in $/Kwh per l'elezione
+    private static final double NO_VALID_PRICE = -1.0; // Valore sentinella
+    private double myEnegyValue = NO_VALID_PRICE; //Prezzo in $/Kwh per l'elezione
+    private volatile String requestIdForCurrentPrice = null;
     private double energyRequest;
     private NetworkManager networkManager; //Per gestire l'elezione
     private volatile boolean isCurrentlyBusy = false; // volatile per visibilità tra thread
     private volatile long productionEndsAtMillis = 0L;  // volatile per visibilità
+    private volatile String activelyParticipatingInElectionForRequestId = null; //per vedere se sta partecipando a una elezione
+    private volatile boolean isNewlyJoinedAndMustForward = true; //Per vedere se la pianta è nuova
 
     private SlidingWindowBuffer pollutionBuffer; // Usa la nostra implementazione
     private PollutionSensor sensorSimulator;     // Istanza del TUO simulatore
@@ -216,20 +222,20 @@ public class ThermalPowerPlants {
                 }
             }
 
-            synchronized(this) {
+            synchronized (this) {
                 this.allPlantsInfoInNetwork.clear();
                 for (ThermalPowerPlants plantData : plantsArrayFromServer) {
                     this.allPlantsInfoInNetwork.add(new ThermalPowerPlantInfo(plantData.getId(), plantData.getAddress(), plantData.getPortNumber()));
                 }
                 // Assicurati che la pianta corrente sia nella sua lista, se l'admin non l'ha inclusa
                 boolean selfInList = false;
-                for(ThermalPowerPlantInfo p : this.allPlantsInfoInNetwork) {
-                    if(p.getId() == this.id) {
+                for (ThermalPowerPlantInfo p : this.allPlantsInfoInNetwork) {
+                    if (p.getId() == this.id) {
                         selfInList = true;
                         break;
                     }
                 }
-                if(!selfInList) {
+                if (!selfInList) {
                     this.allPlantsInfoInNetwork.add(new ThermalPowerPlantInfo(this.id, this.address, this.portNumber));
                 }
                 Collections.sort(this.allPlantsInfoInNetwork, Comparator.comparingInt(ThermalPowerPlantInfo::getId));
@@ -265,7 +271,7 @@ public class ThermalPowerPlants {
                 PlantServiceGrpc.PlantServiceBlockingStub stub = PlantServiceGrpc.newBlockingStub(channel);
 
                 // Effettua la chiamata gRPC con un timeout
-                Ack ack = stub.withDeadlineAfter(5, TimeUnit.SECONDS).announcePresence(myInfoMessage);
+                Ack ack = stub.announcePresence(myInfoMessage);
                 System.out.println("TPP " + this.id + ": Received Ack from Plant " + existingPlant.getId() + ": " + ack.getMessage());
 
             } catch (Exception e) {
@@ -336,8 +342,7 @@ public class ThermalPowerPlants {
     public void connectToOtherPlants(List<ThermalPowerPlantInfo> allPlantsInfoSortedById) {
         System.out.println("TPP " + this.id + " is establishing its ring connection based on " + allPlantsInfoSortedById.size() + " plants.");
         establishRingConnection(allPlantsInfoSortedById);
-        this.participantFlagForNM = true;
-        System.out.println("SuccStub dopo estabilisehRingConnection: " + this.successorStub);
+
         System.out.println("TPP " + this.id + ": Finished establishing ring connection. My successor stub is: " + this.successorStub);
         networkManager = new NetworkManager(this, id, this.myEnegyValue, this.successorStub, this.successorChannel);
         System.out.println("TPP " + this.id + ": NetworkManager instance: " + System.identityHashCode(this.networkManager));
@@ -348,6 +353,8 @@ public class ThermalPowerPlants {
     // La lista è già ordinata per ID.
     public synchronized void establishRingConnection(List<ThermalPowerPlantInfo> allPlantsSortedById) {
         this.allPlantsInfoInNetwork = new ArrayList<>(allPlantsSortedById); // Salva una copia
+        // Chiudi il vecchio canale (SE ESISTE E SE È DIVERSO DAL NUOVO POTENZIALE)
+        ManagedChannel oldChannel = this.successorChannel; // Salva riferimento al vecchio
 
         if (this.allPlantsInfoInNetwork == null || this.allPlantsInfoInNetwork.isEmpty()) {
             System.err.println("TPP " + this.id + ": Plant list is empty, cannot establish ring.");
@@ -358,8 +365,7 @@ public class ThermalPowerPlants {
             System.out.println("TPP " + this.id + ": I am the only plant in the network. No successor.");
             this.successorChannel = null;
             this.successorStub = null;
-            // Inizializza NetworkManager, se necessario, sapendo che non c'è successore
-            // networkManager = new NetworkManager(this.id, this.myEnergyValue, null, null);
+
             return;
         }
 
@@ -389,6 +395,7 @@ public class ThermalPowerPlants {
                 // Potrebbe succedere se la lista non è aggiornata correttamente o se c'è un bug
                 this.successorChannel = null;
                 this.successorStub = null;
+                successorInfo = null;
                 return;
             }
             // Se network size è 1, è già gestito sopra (nessun successore)
@@ -400,7 +407,6 @@ public class ThermalPowerPlants {
 
         // Ottieni le informazioni del nuovo successore
         ThermalPowerPlantInfo newSuccessorInfo = this.allPlantsInfoInNetwork.get(successorIndex);
-        int newSuccessorId = (newSuccessorInfo != null) ? newSuccessorInfo.getId() : -1; // o un valore sentinella se null
 
         // Chiudi il canale precedente se esisteva, per evitare resource leak
         if (this.successorChannel != null && !this.successorChannel.isShutdown()) {
@@ -430,7 +436,7 @@ public class ThermalPowerPlants {
                     .build();
             newStubForSuccessor = PlantServiceGrpc.newBlockingStub(newManagedChannelForSuccessor);
             System.out.println("TPP " + this.id + ": Successfully created new channel and stub for successor " + newSuccessorInfo.getId());
-        } else if (newSuccessorInfo != null && (newSuccessorInfo.getId() == this.id) && this.allPlantsInfoInNetwork.size() == 1){
+        } else if (newSuccessorInfo != null && (newSuccessorInfo.getId() == this.id) && this.allPlantsInfoInNetwork.size() == 1) {
             System.out.println("TPP " + this.id + ": I am the only plant. No successor.");
             // newManagedChannelForSuccessor e newStubForSuccessor rimangono null
         } else if (newSuccessorInfo == null) {
@@ -441,6 +447,9 @@ public class ThermalPowerPlants {
         // Aggiorna i membri di ThermalPowerPlant
         this.successorChannel = newManagedChannelForSuccessor;
         this.successorStub = newStubForSuccessor;
+
+        System.out.println("TPP " + this.id + ": Successor updated. New stub is " + (this.successorStub != null) +
+                ". Old channel to shutdown: " + (oldChannel != null));
 
         // Aggiorna NetworkManager
         if (this.networkManager == null) {
@@ -455,14 +464,24 @@ public class ThermalPowerPlants {
             );
             System.out.println("TPP " + this.id + ": NetworkManager initialized.");
         } else {
-            // NetworkManager esiste già, aggiorna il suo successore
-            this.networkManager.updateSuccessor(
-                    this.successorStub,
-                    this.successorChannel
-            );
-            System.out.println("TPP " + this.id + ": NetworkManager successor updated.");
-            System.out.println("TPP " + this.id + ": NetworkManager instance: " + System.identityHashCode(this.networkManager));
+            System.out.println("TPP " + this.id + ": Successor identity may have changed. NM will fetch current stub as needed.");
         }
+
+        // Chiudi il vecchio canale DOPO aver aggiornato i riferimenti e informato NM (se necessario)
+        if (oldChannel != null && oldChannel != this.successorChannel && !oldChannel.isShutdown()) {
+            System.out.println("TPP " + this.id + ": Shutting down PREVIOUS successor channel.");
+            oldChannel.shutdown();
+            try {
+                if (!oldChannel.awaitTermination(5, TimeUnit.SECONDS)) {
+                    oldChannel.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                oldChannel.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        this.participantFlagForNM = true; // La pianta è pronta per la logica NM base dopo la configurazione dell'anello
         System.out.println("TPP " + this.id + ": Ring connection setup/update complete. My successor stub for NetworkManager: " + (this.successorStub != null));
     }
 
@@ -470,6 +489,7 @@ public class ThermalPowerPlants {
      * Controlla se la pianta è attualmente occupata a produrre energia.
      * Se la produzione è terminata, aggiorna lo stato a non occupato.
      * Questo metodo è thread-safe usando la sincronizzazione sul metodo stesso.
+     *
      * @return true se la pianta è occupata, false altrimenti.
      */
     public synchronized boolean isBusyProducing() { // Metodo Sincronizzato
@@ -478,6 +498,7 @@ public class ThermalPowerPlants {
                 System.out.println("TPP " + this.id + ": Production time ended. Releasing busy state.");
                 isCurrentlyBusy = false;
                 productionEndsAtMillis = 0L;
+                currentProductionRequestId = null; // Assicurati che venga resettato
                 return false;
             }
             return true;
@@ -485,13 +506,94 @@ public class ThermalPowerPlants {
         return false;
     }
 
+    // Metodo per controllare se la pianta può avviare/partecipare a una NUOVA elezione
+    public synchronized boolean canParticipateInNewElection() {
+        if (isCurrentlyBusy) {
+            System.out.println("TPP " + this.id + ": Cannot participate in new election, currently busy producing for request '" + currentProductionRequestId + "'.");
+            return false;
+        }
+        if (activelyParticipatingInElectionForRequestId != null) {
+            System.out.println("TPP " + this.id + ": Cannot participate in new election, already actively participating in election for request '" + activelyParticipatingInElectionForRequestId + "'.");
+            return false;
+        }
+        // Se isNewlyJoinedAndMustForward è true, questa pianta non dovrebbe INIZIARE una nuova elezione
+        // (perché potrebbe non avere ancora un successore stabile o una visione completa della rete).
+        // Ma il controllo principale per le nuove piante è in NetworkManager.onElectionMessage.
+        // Qui, per coerenza, potremmo anche aggiungerlo, ma è più critico per la *ricezione* di messaggi.
+        return true;
+    }
+
+    // Metodo chiamato quando la pianta inizia a partecipare attivamente a un'elezione
+    public synchronized void startedActiveParticipationInElection(String requestId) {
+        this.activelyParticipatingInElectionForRequestId = requestId;
+        System.out.println("TPP " + this.id + ": Actively participating in election for request '" + requestId + "'.");
+    }
+
+    // Metodo da chiamare PRIMA di avviare una nuova elezione (es. da callback MQTT)
+    public boolean prepareForNewElection(String requestId, double kwh) { // kwh solo per logging forse
+        synchronized (this) {
+            if (isBusyProducing()) { // Usa la nuova isBusyProducing()
+                System.out.println("TPP " + this.id + ": Cannot prepare for new election for request '" + requestId +
+                        "', currently busy producing for request '" + currentProductionRequestId + "'.");
+                return false;
+            }
+            if (activelyParticipatingInElectionForRequestId != null && !this.activelyParticipatingInElectionForRequestId.equals(requestId)) {
+                System.out.println("TPP " + this.id + ": Cannot prepare for new election for request '" + requestId +
+                        "', already actively participating in election for request '" +
+                        activelyParticipatingInElectionForRequestId + "'.");
+                return false;
+            }
+
+            if (requestId.equals(this.requestIdForCurrentPrice) && this.myEnegyValue != NO_VALID_PRICE) {
+                System.out.println("TPP " + this.id + ": Already prepared for election '" + requestId + "' with price " + this.myEnegyValue);
+                startedActiveParticipationInElection(requestId); // Riafferma la partecipazione
+                return true;
+            }
+
+            // Se tutti i controlli passano, la pianta si prepara
+            this.myEnegyValue = 0.1 + (0.8 * new java.util.Random().nextDouble());
+            this.requestIdForCurrentPrice = requestId;
+
+            /* if (networkManager != null) { // Assicurati che NM esista
+                networkManager.setValue(this.myEnegyValue);
+            } else {
+                System.err.println("TPP " + this.id + ": NetworkManager is null during prepareForNewElection for request '" + requestId + "'! Cannot set value.");
+                return false; // Non possiamo procedere
+            }
+             */
+            startedActiveParticipationInElection(requestId); // Segna che ora è impegnata per questa richiesta
+            System.out.println("TPP " + this.id + ": Prepared for new election. Request ID: '" + requestId + "', Price: " + this.myEnegyValue);
+            return true;
+        }
+    }
+
+    // Metodo chiamato quando un'elezione (per un dato requestId) si conclude per questa pianta
+    // (o quando smette di essere partecipante attivo)
+    public synchronized void electionProcessConcludedForRequest(String requestId) {
+        boolean wasParticipating = false;
+
+        if (requestId != null && requestId.equals(this.activelyParticipatingInElectionForRequestId)) {
+            this.activelyParticipatingInElectionForRequestId = null;
+            wasParticipating = true;
+            System.out.println("TPP " + this.id + ": Concluded active participation in election for request '" + requestId + "'. Now available for other elections.");
+        }
+        if (requestId != null && requestId.equals(this.requestIdForCurrentPrice)) {
+            // Pulisce il prezzo solo se l'elezione conclusa è quella per cui avevamo questo prezzo.
+            clearCurrentPriceInfo();
+        } else if (wasParticipating) {
+            System.out.println("TPP " + this.id + ": Election for request '" + requestId + "' concluded, but current price was for a different request ('" + this.requestIdForCurrentPrice + "'). Price not cleared by this event.");
+        }
+    }
+
+
     /**
      * Metodo chiamato quando QUESTA pianta vince un'elezione e deve iniziare la produzione.
      * Imposta lo stato della pianta a "occupato" per la durata calcolata.
      * Questo metodo è thread-safe usando la sincronizzazione sul metodo stesso.
+     *
      * @param kWhToProduce La quantità di kWh da produrre.
      */
-    public synchronized void handleElectionWinAndStartProduction(double kWhToProduce) { // Metodo Sincronizzato
+    public synchronized void handleElectionWinAndStartProduction(String requestId, double kWhToProduce) { // Metodo Sincronizzato
         long productionDurationMs = (long) kWhToProduce * 1; // 1 millisecondo per kWh
 
         // Anche se isBusyProducing() è sincronizzato, un controllo qui dentro un blocco sincronizzato
@@ -504,20 +606,23 @@ public class ThermalPowerPlants {
             return;
         }
 
+        electionProcessConcludedForRequest(requestId); // L'elezione è conclusa, la pianta è occupata o libera
         isCurrentlyBusy = true;
         productionEndsAtMillis = System.currentTimeMillis() + productionDurationMs;
+        this.currentProductionRequestId = requestId; // Salva l'ID della richiesta per cui stiamo producendo
 
-        System.out.println("TPP " + this.id + ": WON ELECTION for request '" +  "'. " +
+        System.out.println("TPP " + this.id + ": WON ELECTION for request '" + "'. " +
                 "Starting production of " + kWhToProduce + " kWh. " +
                 "Will be busy for " + productionDurationMs + " ms (until " +
                 new Date(productionEndsAtMillis) + ").");
+        this.electionProcessConcludedForRequest(requestId);
 
         // Avvia un thread separato per "sbloccare" lo stato busy dopo la durata.
         Thread productionTimerThread = new Thread(() -> {
             try {
                 Thread.sleep(productionDurationMs);
             } catch (InterruptedException e) {
-                System.err.println("TPP " + this.id + ": Production timer for request " +  " interrupted.");
+                System.err.println("TPP " + this.id + ": Production timer for request " + " interrupted.");
                 Thread.currentThread().interrupt();
             } finally {
                 // Reset proattivo dello stato. Deve essere sincronizzato se accede
@@ -526,20 +631,64 @@ public class ThermalPowerPlants {
                     // Controlla se questa era ancora la produzione che doveva finire ora
                     // E se il productionEndsAtMillis non è stato sovrascritto
                     if (isCurrentlyBusy && System.currentTimeMillis() >= productionEndsAtMillis &&
-                            productionEndsAtMillis != 0L ) { // Aggiunto controllo per productionEndsAtMillis != 0L
+                            productionEndsAtMillis != 0L) { // Aggiunto controllo per productionEndsAtMillis != 0L
                         // Per essere sicuri, potremmo voler controllare se productionEndsAtMillis è esattamente
                         // quello che ci aspettavamo da QUESTA produzione, ma diventa più complesso.
                         // Il controllo temporale è di solito sufficiente.
                         System.out.println("TPP " + this.id + ": Production timer thread for request " + " finished. Releasing busy state.");
                         isCurrentlyBusy = false;
                         productionEndsAtMillis = 0L;
+                        this.currentProductionRequestId = null; // Resetta l'ID della richiesta in produzione
+                    } else if (isCurrentlyBusy && !requestId.equals(this.currentProductionRequestId)) {
+                        // Questo caso si verifica se, nel frattempo, la TPP ha vinto un'altra elezione
+                        // e this.currentProductionRequestId è stato sovrascritto.
+                        // Il timer per la vecchia richiesta 'requestId' non dovrebbe resettare lo stato
+                        // che appartiene ora a una produzione più recente.
+                        System.out.println("TPP " + this.id + ": Production timer for OLD request '" + requestId +
+                                "' (kWh: " + kWhToProduce + ") finished, but plant is currently busy with NEWER request '" +
+                                this.currentProductionRequestId + "'. State NOT changed by this (old) timer.");
+                    } else if (!isCurrentlyBusy && requestId.equals(this.currentProductionRequestId)) {
+                        // Stato già rilasciato, forse da un altro meccanismo o un precedente timer.
+                        System.out.println("TPP " + this.id + ": Production timer for request '" + requestId +
+                                "' (kWh: " + kWhToProduce + ") finished, but plant was no longer busy for this request (or busy state already cleared). Current request ID was: " + this.currentProductionRequestId);
+                        sendAckToRep(requestId);
+                        // Assicura che currentProductionRequestId sia null se corrisponde e non siamo busy
+                        if (this.currentProductionRequestId != null && this.currentProductionRequestId.equals(requestId)) {
+                            this.currentProductionRequestId = null;
+                        }
                     }
                 }
             }
         });
-        productionTimerThread.setName("ProductionTimer-" + this.id );
+        productionTimerThread.setName("ProductionTimer-" + this.id);
         productionTimerThread.setDaemon(true);
         productionTimerThread.start();
+    }
+
+    private void sendAckToRep(String acknowledgedRequestId) {
+        if (mqttClient != null && mqttClient.isConnected()) {
+            JSONObject ackPayload = new JSONObject();
+            ackPayload.put("requestId", acknowledgedRequestId);
+            ackPayload.put("plantId", this.id); // Informazione aggiuntiva utile per il REP
+            ackPayload.put("message", "TPP " + this.id + " will handle request " + acknowledgedRequestId);
+            ackPayload.put("timestamp", System.currentTimeMillis());
+
+            String payloadStr = ackPayload.toString();
+            MqttMessage ackMessage = new MqttMessage(payloadStr.getBytes(StandardCharsets.UTF_8));
+            ackMessage.setQos(1); // QoS 1 o 2 per l'ACK è una buona idea
+
+            try {
+                // Assicurati che ENERGY_ACK_TOPIC sia definito, es. come costante statica
+                // private static final String ENERGY_ACK_TOPIC_FROM_TPP = "home/renewableEnergyProvider/power/ack";
+                mqttClient.publish("home/renewableEnergyProvider/power/ack", ackMessage); // Usa il topic corretto
+                System.out.println("TPP " + this.id + ": Sent ACK to REP for requestId: " + acknowledgedRequestId);
+            } catch (MqttException e) {
+                System.err.println("TPP " + this.id + ": Failed to send ACK for requestId " + acknowledgedRequestId + " to REP: " + e.getMessage());
+                // Qui potresti considerare una logica di retry per l'ACK se è critico
+            }
+        } else {
+            System.err.println("TPP " + this.id + ": Cannot send ACK for requestId " + acknowledgedRequestId + ", MQTT client not connected.");
+        }
     }
 
     private void setupMqtt() {
@@ -559,46 +708,97 @@ public class ThermalPowerPlants {
     }
 
     private void subscribeToEnergyRequests() {
-        // Subscrivi a un topic tipo "energy/requests"
         try {
-            mqttClient.subscribe(energyRequestTopic, (topic, message) -> {
+            mqttClient.subscribe(energyRequestTopic, 1, (topic, message) -> {
                 String payload = new String(message.getPayload());
-                System.out.println("Richiesta energia ricevuta: " + payload);
+                System.out.println("TPP " + this.id + ": Energy request received on MQTT: " + payload);
 
-                // Parsing semplificato (JSON → oggetto). Usa una libreria come Jackson o manualmente
-                String[] parts = payload.replace("{", "").replace("}", "").replace("\"", "").split(",");
-                System.out.println(Arrays.toString(parts));
-
-                this.energyRequest = Double.parseDouble(parts[0]);
-                this.networkManager.setCurrentElectionKWh(this.energyRequest);
-
-                System.out.println(Arrays.toString(parts));
-
-                if (isBusyProducing()) { // isBusyProducing() è già synchronized
-                    System.out.println("TPP " + this.id + ": IGNORANDO nuova richiesta energia '" + this.energyRequest +
-                            "' perché attualmente occupato a produrre.");
-                    return; // Esci dal callback, non partecipare all'elezione
+                JSONObject requestJson;
+                String parsedRequestId;
+                double kwhDouble;
+                try {
+                    requestJson = new JSONObject(payload);
+                    parsedRequestId = requestJson.getString("requestId");
+                    kwhDouble = requestJson.getDouble("kWh");
+                } catch (Exception e) {
+                    System.err.println("TPP " + this.id + ": Error parsing MQTT message: " + payload + ". Error: " + e.getMessage());
+                    return; // Non possiamo procedere
                 }
 
-                this.myEnegyValue = 0.1 + (0.8 * new Random().nextDouble());
-                networkManager.setValue(this.myEnegyValue);  //Genero il prezzo random
-                System.out.println("Prezzo assegnato alla pianta di id " + this.id + ": " + this.myEnegyValue);
-                handleIncomingEnergyRequest();
+                // Controlli veloci da fare nel thread del callback
+                if (isBusyProducing()) {
+                    System.out.println("TPP " + this.id + ": IGNORING new energy request '" + parsedRequestId +
+                            "' because currently busy producing for . (Callback Thread)");
+                    return;
+                }
+
+                if (this.activelyParticipatingInElectionForRequestId != null) {
+                    System.out.println("TPP " + this.id + ": IGNORING new energy request '" + parsedRequestId +
+                            "' because already actively participating in election for request '" +
+                            this.activelyParticipatingInElectionForRequestId + "'. (Callback Thread)");
+                    return;
+                }
+
+                if (networkManager == null || !this.participantFlagForNM) { // participantFlagForNM verifica se TPP è pronta
+                    System.err.println("TPP " + this.id + ": NetworkManager not ready or TPP not fully initialized for elections! Cannot process request " +
+                            parsedRequestId + ". (Callback Thread)");
+                    return;
+                }
+
+                // Prepara i dati per il nuovo thread
+                final String finalRequestId = parsedRequestId;
+                final double finalKwh = kwhDouble;
+
+                if (!prepareForNewElection(finalRequestId, finalKwh)) {
+                    System.out.println("TPP " + this.id + ": Did not start election for request '" + finalRequestId + "' due to current state.");
+                    // Qui potresti mettere la richiesta in una coda
+                    return; // Esce dal gestore della richiesta specifica
+                }
+
+                // Crea e avvia un nuovo thread per gestire l'avvio dell'elezione
+                Thread electionHandlerThread = new Thread(() -> {
+                    try {
+                        System.out.println("TPP " + this.id + ": Election Handler Thread started for request '" + finalRequestId + "'.");
+                        // Il prezzo è già stato generato e associato in prepareForNewElection.
+                        // NetworkManager lo prenderà dalla TPP.
+                        handleIncomingEnergyRequest(finalRequestId, finalKwh);
+                    } catch (Exception e) {
+                        System.err.println("TPP " + this.id + ": Error processing energy request '" + finalRequestId + "' in dedicated thread: " + e.getMessage());
+                        e.printStackTrace();
+                    } finally {
+                        System.out.println("TPP " + this.id + ": Election Handler Thread finished for request '" + finalRequestId + "'.");
+                    }
+                });
+                electionHandlerThread.setName("ElectionHandler-" + this.id + "-" + finalRequestId);
+                electionHandlerThread.start();
+
             });
-            System.out.println("Sottoscritto al topic " + energyRequestTopic);
+            System.out.println("TPP " + this.id + ": Subscribed to topic " + energyRequestTopic);
 
         } catch (MqttException e) {
-            System.err.println("Errore nella sottoscrizione MQTT: " + e.getMessage());
+            System.err.println("TPP " + this.id + ": Error in MQTT subscription: " + e.getMessage());
         }
     }
 
-    public void handleIncomingEnergyRequest() {
-        System.out.println("Ricevuta richiesta energia MQTT (o gRPC) → inizio elezione");
+    public void handleIncomingEnergyRequest(String requestId, double kWh) {
+        System.out.println("TPP " + this.id + ": Attempting to start election for request '" + requestId + "'.");
 
-        if (networkManager != null) {
-            networkManager.startElection(this.energyRequest);
+        if (networkManager != null && this.participantFlagForNM) {
+            // Verifica che la TPP abbia effettivamente un prezzo per QUESTA richiesta.
+            // prepareForNewElection dovrebbe essere già stato chiamato nel callback MQTT.
+            if (!hasPreparedPriceForRequest(requestId)) {
+                System.err.println("TPP " + this.id + ": CRITICAL - Trying to start election for '" + requestId +
+                        "' but no price prepared for it. Aborting.");
+                // Potrebbe essere necessario chiamare di nuovo prepareForNewElection se questo metodo
+                // può essere chiamato da percorsi diversi da quello MQTT.
+                // In alternativa, la chiamata a prepareForNewElection nel callback MQTT è l'unica fonte.
+                return;
+            }
+            // NetworkManager prenderà il prezzo dalla TPP.
+            networkManager.startElection(requestId, kWh);
         } else {
-            System.err.println("NetworkManager non inizializzato!");
+            System.err.println("TPP " + this.id + ": NetworkManager not initialized or TPP not ready! " +
+                    "Cannot start election for request '" + requestId + "'.");
         }
     }
 
@@ -653,6 +853,14 @@ public class ThermalPowerPlants {
 
     // Nel metodo di shutdown della pianta:
     public void shutdown() { // Se hai un metodo di shutdown, o implementalo
+
+        if (isShutdownInitiated) {
+            System.out.println("TPP " + this.id + ": Shutdown already in progress.");
+            return;
+        }
+        isShutdownInitiated = true;
+        System.out.println("TPP " + this.id + ": Shutting down...");
+
         System.out.println("TPP " + this.id + ": Shutting down...");
         if (sensorSimulator != null) {
             sensorSimulator.stopMeGently(); // Usa il metodo fornito da Simulator
@@ -672,10 +880,9 @@ public class ThermalPowerPlants {
             dataSenderScheduler.shutdownNow();
             // ... (attendi terminazione come prima) ...
         }
-        // ... (chiudi server gRPC, client MQTT come prima) ...
+
         System.out.println("TPP " + this.id + ": Shutdown complete.");
     }
-
 
 
     private void shutdownGrpcServer() {
@@ -698,7 +905,7 @@ public class ThermalPowerPlants {
                 Thread.currentThread().interrupt();
             }
             System.out.println("TPP " + this.id + ": gRPC server shut down.");
-        } else if (this.grpcServer != null && this.grpcServer.isShutdown()){
+        } else if (this.grpcServer != null && this.grpcServer.isShutdown()) {
             System.out.println("TPP " + this.id + ": gRPC server was already shut down.");
         } else {
             System.out.println("TPP " + this.id + ": No gRPC server instance to shut down.");
@@ -718,10 +925,6 @@ public class ThermalPowerPlants {
         return this.portNumber;
     }
 
-    public int[] getPollution() {
-        return new int[]{1, 2};
-    }
-
     public List<ThermalPowerPlants> getAllPlants() {
         return this.AllPlants;
     }
@@ -730,38 +933,15 @@ public class ThermalPowerPlants {
         return this.networkManager;
     }
 
-    public void setAllPlants(List<ThermalPowerPlants> allPlants) {
-        this.AllPlants = allPlants;
-    }
-
-    public void setSuccessorStub(PlantServiceGrpc.PlantServiceBlockingStub successorStub) {
-        this.successorStub = successorStub;
-    }
-
-    public void addLocalPlantSorted(ThermalPowerPlants plants) {
-        this.AllPlants.add(plants);
-        this.AllPlants.sort(Comparator.comparing(ThermalPowerPlants::getId));
+    public synchronized PlantServiceGrpc.PlantServiceBlockingStub getCurrentSuccessorStub() {
+        // Potresti aggiungere qui logica se lo stub non è valido / il canale è chiuso,
+        // ma establishRingConnection dovrebbe mantenerlo consistente.
+        return this.successorStub;
     }
 
     public String toString() {
         return "ID = " + this.getId() + "\nAddress = " + this.getAddress() + "\nPortNumber = " + this.getPortNumber();
     }
-
-    public ManagedChannel getSuccessorChannel() {
-        return this.successorChannel;
-    }
-
-    public PlantServiceGrpc.PlantServiceBlockingStub getSuccessorStub() {
-        return this.successorStub;
-    }
-    public Map<Integer, String> getTopology(){
-        return this.topology;
-    }
-
-    public double getMyValue() {
-        return myEnegyValue;
-    }
-
 
     public static ResponseEntity<ThermalPowerPlants[]> postRequest(String url, ThermalPowerPlants dummyPlants) {
         try {
@@ -781,15 +961,36 @@ public class ThermalPowerPlants {
         }
     }
 
-    public int getAvailableEnergy() {
-        return availableEnergy;
-    }
-
-    public boolean canHandle(int requiredEnergy) {
-        return availableEnergy >= requiredEnergy;
-    }
-
     public boolean isReadyForElection() {
         return this.participantFlagForNM;
+    }
+
+    public synchronized String getActivelyParticipatingInElectionForRequestId() {
+        return this.activelyParticipatingInElectionForRequestId;
+    }
+
+    // Metodo per "pulire" il prezzo quando un'elezione finisce
+    public synchronized void clearCurrentPriceInfo() {
+        if (this.requestIdForCurrentPrice != null || this.myEnegyValue != NO_VALID_PRICE) {
+            System.out.println("TPP " + this.id + ": Clearing price info (was for request '" + this.requestIdForCurrentPrice +
+                    "', price " + String.format("%.3f", this.myEnegyValue) + ").");
+        }
+        this.myEnegyValue = NO_VALID_PRICE;
+        this.requestIdForCurrentPrice = null;
+    }
+
+    public synchronized boolean hasPreparedPriceForRequest(String requestId) {
+        boolean hasPrice = requestId != null &&
+                requestId.equals(this.requestIdForCurrentPrice) &&
+                this.myEnegyValue != NO_VALID_PRICE;
+        return hasPrice;
+    }
+
+    public synchronized double getCurrentElectionPrice() {
+        return this.myEnegyValue;
+    }
+
+    public String getRequestIdForCurrentPrice() {
+        return this.requestIdForCurrentPrice;
     }
 }
