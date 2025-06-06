@@ -265,6 +265,10 @@ public class ThermalPowerPlants {
         for (ThermalPowerPlantInfo existingPlant : existingPlants) {
             ManagedChannel channel = null; // Inizializza a null per il blocco finally
             try {
+                long announceToPeerDelay = 20 + (long)(Math.random() * 80); // Ritardo più breve per ogni annuncio
+                System.out.println("TPP (" + this.id + "): Simulating delay of " + announceToPeerDelay + "ms before announcing to Plant " + existingPlant.getId());
+                Thread.sleep(announceToPeerDelay);
+
                 System.out.println("TPP " + this.id + ": Sending AnnouncePresence to Plant " + existingPlant.getId() +
                         " at " + existingPlant.getAddress() + ":" + existingPlant.getPortNumber());
                 channel = ManagedChannelBuilder
@@ -331,6 +335,7 @@ public class ThermalPowerPlants {
             // itera su di essa mentre un altro thread potrebbe (teoricamente, anche se improbabile con synchronized) modificarla.
             // Tuttavia, dato che il metodo è synchronized, this.allPlantsInfoInNetwork non cambierà
             // finché questo thread non ha finito.
+
             connectToOtherPlants(new ArrayList<>(this.allPlantsInfoInNetwork));
             return true;
         } else {
@@ -345,10 +350,18 @@ public class ThermalPowerPlants {
     public void connectToOtherPlants(List<ThermalPowerPlantInfo> allPlantsInfoSortedById) {
         System.out.println("TPP " + this.id + " is establishing its ring connection based on " + allPlantsInfoSortedById.size() + " plants.");
         establishRingConnection(allPlantsInfoSortedById);
-
         System.out.println("TPP " + this.id + ": Finished establishing ring connection. My successor stub is: " + this.successorStub);
-        networkManager = new NetworkManager(this, id, this.myEnegyValue, this.successorStub, this.successorChannel);
-        System.out.println("TPP " + this.id + ": NetworkManager instance: " + System.identityHashCode(this.networkManager));
+
+        // Inizializzazione o aggiornamento del NetworkManager
+        if (this.networkManager == null) {
+            // Crea NetworkManager SOLO SE non è già stato creato
+            this.networkManager = new NetworkManager(this, this.id, this.myEnegyValue, this.successorStub, this.successorChannel);
+            System.out.println("TPP " + this.id + ": NetworkManager INITIALIZED. Hash: " + System.identityHashCode(this.networkManager));
+        } else {
+            // Se NM esiste già, si aggiornerà dinamicamente chiedendo lo stub alla TPP
+            System.out.println("TPP " + this.id + ": NetworkManager already exists (Hash: " + System.identityHashCode(this.networkManager) +
+                    "). It will fetch current successor info as needed.");
+        }
     }
 
     // Metodo chiamato dopo che la pianta si è registrata e ha ricevuto la lista

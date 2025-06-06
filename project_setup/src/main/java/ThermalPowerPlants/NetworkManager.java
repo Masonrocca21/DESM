@@ -19,27 +19,6 @@ public class NetworkManager {
 
     }
 
-    /* public synchronized void updateSuccessor(PlantServiceGrpc.PlantServiceBlockingStub newSuccessorStub,
-                                ManagedChannel newSuccessorChannel) {
-        System.out.println("NetworkManager (Plant " + this.myId + "): Updating successor");
-
-        // Il chiamante (ThermalPowerPlant) è responsabile della gestione del ciclo di vita del vecchio canale.
-        // NetworkManager si limita a usare i nuovi riferimenti.
-
-        this.successorStub = newSuccessorStub;
-        this.successorChannel = newSuccessorChannel;
-
-        if (this.successorChannel != null && this.successorStub == null) {
-            System.err.println("NetworkManager (Plant " + this.myId + "): Warning - Updated successor channel provided but stub is null.");
-        }
-        if (this.successorChannel == null && this.successorStub != null) {
-            System.err.println("NetworkManager (Plant " + this.myId + "): Warning - Updated successor stub provided but channel is null.");
-        }
-        System.out.println("NetworkManager (Plant " + this.myId + "): Successor updated successfully");
-    }
-
-     */
-
     public void startElection(String requestID, double kWh) {
 
         PlantServiceGrpc.PlantServiceBlockingStub currentStub = null;
@@ -110,7 +89,7 @@ public class NetworkManager {
 
         try {
             // DELAY SIMULATO
-            long processingDelay = 30 + (long)(Math.random() * 150); // Delay tra 30 e 180 ms
+            long processingDelay = 100 + (long)(Math.random() * 250); // Delay tra 100 e 350 ms
             System.out.println("NetworkManager (Plant " + this.myId + "): Simulating processing delay of " + processingDelay + "ms for received ELECTION from candidate " + receivedMsg.getCandidateId());
             Thread.sleep(processingDelay);
         } catch (InterruptedException e) {
@@ -132,15 +111,19 @@ public class NetworkManager {
         // PRIMO CONTROLLO: L'elezione per questa requestId è già conclusa?
         if (plantInstance.isElectionConcluded(receivedRequestId)) {
             System.out.println("NM (" + this.myId + "): Election for request '" + receivedRequestId +
-                    "' ALREADY CONCLUDED (seen Elected). Discarding/Passively forwarding ELECTION msg (candidate " +
-                    receivedMsg.getCandidateId() + ").");
-            // Se non sono io il candidato nel messaggio, potrei inoltrarlo passivamente una volta per sicurezza,
-            // ma idealmente dovrebbe essere assorbito.
-            // Per evitare loop, se il candidato sono io, sicuramente lo scarto.
-            if (receivedMsg.getCandidateId() != this.myId && stubToUseForForwarding != null) {
-                // sendElectionToNext(receivedMsg, stubToUseForForwarding); // Inoltro passivo cauto
-            } else {
-                // Assorbi/scarta il messaggio
+                    "' ALREADY CONCLUDED. Candidate in msg: " + receivedMsg.getCandidateId() +
+                    ". My ID: " + this.myId);
+            // Se l'elezione è conclusa, non si dovrebbe più partecipare attivamente o inoltrare il proprio messaggio.
+            // Si potrebbe inoltrare passivamente il messaggio di un ALTRO candidato se non si è ancora visto l'Elected di quel candidato.
+            // MA, se il messaggio è il MIO (candidateId == myId) e l'elezione è conclusa, lo devo assorbire.
+            if (receivedMsg.getCandidateId() == this.myId) {
+                System.out.println("NM (" + this.myId + "): Discarding my own ELECTION message for already concluded request '" + receivedRequestId + "'.");
+            } else if (stubToUseForForwarding != null) {
+                // Inoltra passivamente il messaggio di un ALTRO candidato, anche se l'elezione è conclusa.
+                // Questo permette al messaggio "orfano" di un'altra pianta di completare il suo giro e essere assorbito.
+                System.out.println("NM (" + this.myId + "): Passively forwarding ELECTION message from candidate " + receivedMsg.getCandidateId() +
+                        " for concluded request '" + receivedRequestId + "'.");
+                sendElectionToNext(receivedMsg, stubToUseForForwarding);
             }
             return; // Termina l'elaborazione per questa elezione conclusa
         }
@@ -308,8 +291,6 @@ public class NetworkManager {
             return;
         }
         try {
-            // Assicurati che il tuo servizio gRPC in PlantServiceGrpc.PlantServiceBlockingStub
-            // abbia un metodo che accetta ElectionMessage. Dal tuo codice sembra 'sendElection'.
             System.out.println("NetworkManager (Plant " + this.myId + "): Sending ELECTION to successor " +
                     " (Candidate: " + msgToSend.getCandidateId() + ", Value: " + msgToSend.getCandidateValue() + ")");
             long networkDelay = 50 + (long)(Math.random() * 200); // Delay tra 50 e 250 ms
@@ -338,6 +319,12 @@ public class NetworkManager {
                     .setCurrentElectionRequestId(requestId)
                     .setRequiredKwh(kwh) // Includi kWh
                     .build();
+
+            System.out.println("NetworkManager (Plant " + this.myId + "): Sending ELECTED to successor " +
+                    " (Winner: " + electedMsgToSend.getWinnerId() + ", Value: " + electedMsgToSend.getWinnerValue() + ")");
+            long networkDelay = 50 + (long)(Math.random() * 200); // Delay tra 50 e 250 ms
+            Thread.sleep(networkDelay);
+
             // Assicurati che il tuo servizio gRPC abbia un metodo 'sendElected'.
             System.out.println("NetworkManager (Plant " + this.myId + "): Sending ELECTED to successor " +
                     " (Winner: " + winnerId + ", Value: " + winnerValue + ")");
