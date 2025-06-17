@@ -2,8 +2,6 @@ package PlantServiceGRPC;
 
 import io.grpc.stub.StreamObserver;
 import com.example.powerplants.PlantServiceGrpc;
-import com.example.powerplants.EnergyRequest;
-import com.example.powerplants.EnergyResponse;
 import com.example.powerplants.ElectionMessage;
 import com.example.powerplants.ElectedMessage;
 import com.example.powerplants.PlantInfoMessage;

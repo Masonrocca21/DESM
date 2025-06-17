@@ -6,7 +6,6 @@ import org.json.JSONObject; // Aggiungeremo questo per arricchire il payload
 
 import java.nio.charset.StandardCharsets; // Per encoding
 import java.util.UUID;
-import java.util.Random; // Già usato implicitamente da Math.random()
 import java.util.concurrent.*;
 import java.util.Map;
 import java.util.Deque;
