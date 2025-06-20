@@ -6,12 +6,11 @@ import com.example.powerplants.ElectedMessage;
 import io.grpc.ManagedChannel;
 
 public class NetworkManager {
-    private final int myId;
+    private int myId;
     private boolean participant = false;
-    private final ThermalPowerPlants plantInstance;
+    private ThermalPowerPlants plantInstance;
 
-    public NetworkManager(ThermalPowerPlants plantOwner, int myId, double myValue,
-                           PlantServiceGrpc.PlantServiceBlockingStub stub, ManagedChannel channel ) {
+    public NetworkManager(ThermalPowerPlants plantOwner, int myId) {
         this.myId = myId;
         this.plantInstance = plantOwner;
 
@@ -335,4 +334,8 @@ public class NetworkManager {
         }
     }
 
+    public void updateNetworkManager(int id, ThermalPowerPlants thermalPowerPlants) {
+        this.myId = id;
+        this.plantInstance = thermalPowerPlants;
+    }
 }

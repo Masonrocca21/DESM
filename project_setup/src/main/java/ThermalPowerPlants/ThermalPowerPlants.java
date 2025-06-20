@@ -34,23 +34,17 @@ public class ThermalPowerPlants {
     private int portNumber;
     private String serverAddress = "http://localhost:8080";
     private Server grpcServer;
+    private NetworkManager networkManager; //Per gestire l'elezione
     private volatile boolean isShutdownInitiated = false; // Per evitare chiamate multiple a shutdown
     volatile String currentProductionRequestId;
 
     private Set<String> concludedElectionRequestIds = ConcurrentHashMap.newKeySet(); // Thread-safe
-
-
     private boolean isActive;
-
     private volatile boolean participantFlagForNM = false; //Per capire se può partecipare alle elezioni
-
     private List<ThermalPowerPlants> AllPlants = new ArrayList<>();
     private List<ThermalPowerPlantInfo> allPlantsInfoInNetwork; // ThermalPowerPlantInfo è una classe/record semplice con id, address, port
-    private final Map<Integer, PlantServiceGrpc.PlantServiceBlockingStub> connections = new HashMap<>();
-    private Map<Integer, ManagedChannel> channels = new HashMap<>();
-    public ManagedChannel successorChannel;
+    private ManagedChannel successorChannel;
     private PlantServiceGrpc.PlantServiceBlockingStub successorStub;
-    private Map<Integer, String> topology = new HashMap<>();
     private MqttClient mqttClient;
     private static String broker = "tcp://localhost:1883";
     private final String energyRequestTopic = "home/renewableEnergyProvider/power/new";
@@ -59,8 +53,6 @@ public class ThermalPowerPlants {
     private static final double NO_VALID_PRICE = -1.0; // Valore sentinella
     private double myEnegyValue = NO_VALID_PRICE; //Prezzo in $/Kwh per l'elezione
     private volatile String requestIdForCurrentPrice = null;
-    private double energyRequest;
-    private NetworkManager networkManager; //Per gestire l'elezione
     private volatile boolean isCurrentlyBusy = false; // volatile per visibilità tra thread
     private volatile long productionEndsAtMillis = 0L;  // volatile per visibilità
     private volatile String activelyParticipatingInElectionForRequestId = null; //per vedere se sta partecipando a una elezione
@@ -71,7 +63,6 @@ public class ThermalPowerPlants {
 
     private ScheduledExecutorService dataSenderScheduler;
     private final String pollutionDataTopic = "DESM/pollution_stats"; // O il topic che preferisci
-    private int availableEnergy;
 
     public ThermalPowerPlants() {
         this.allPlantsInfoInNetwork = new ArrayList<>();
@@ -118,7 +109,7 @@ public class ThermalPowerPlants {
             // ----- MOMENTO CRUCIALE 1: Inizializzazione NM -----
             // Necessario per evitare NPE
             if (this.networkManager == null) {
-                this.networkManager = new NetworkManager(this, this.id, 0.5, null, null);
+                this.networkManager = new NetworkManager(this, this.id);
                 System.out.println("P3 (" + this.id + "): NetworkManager PRE-INITIALIZED. Hash: " + System.identityHashCode(this.networkManager));
             }
             // ---------------------------------------------------------
@@ -355,7 +346,7 @@ public class ThermalPowerPlants {
         // Inizializzazione o aggiornamento del NetworkManager
         if (this.networkManager == null) {
             // Crea NetworkManager SOLO SE non è già stato creato
-            this.networkManager = new NetworkManager(this, this.id, this.myEnegyValue, this.successorStub, this.successorChannel);
+            this.networkManager.updateNetworkManager(this.id, this);
             System.out.println("TPP " + this.id + ": NetworkManager INITIALIZED. Hash: " + System.identityHashCode(this.networkManager));
         } else {
             // Se NM esiste già, si aggiornerà dinamicamente chiedendo lo stub alla TPP
@@ -471,13 +462,9 @@ public class ThermalPowerPlants {
         if (this.networkManager == null) {
             // Prima creazione di NetworkManager
             double initialPrice = 0.5; // o un valore di default o calcolato
-            this.networkManager = new NetworkManager(
-                    this,
-                    this.id,
-                    initialPrice,
-                    this.successorStub,
-                    this.successorChannel
-            );
+
+            this.networkManager.updateNetworkManager(this.id, this);
+
             System.out.println("TPP " + this.id + ": NetworkManager initialized.");
         } else {
             System.out.println("TPP " + this.id + ": Successor identity may have changed. NM will fetch current stub as needed.");
@@ -954,7 +941,7 @@ public class ThermalPowerPlants {
         return this.AllPlants;
     }
 
-    public NetworkManager getNetworkManager() {
+    public synchronized NetworkManager getNetworkManager() {
         return this.networkManager;
     }
 
