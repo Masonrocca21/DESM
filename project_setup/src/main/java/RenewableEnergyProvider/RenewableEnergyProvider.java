@@ -5,10 +5,7 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence; // Aggiunto
 import org.json.JSONObject; // Aggiungeremo questo per arricchire il payload
 
 import java.nio.charset.StandardCharsets; // Per encoding
-import java.util.UUID;
-import java.util.concurrent.*;
-import java.util.Map;
-import java.util.Deque;
+import java.util.*;
 
 public class RenewableEnergyProvider {
 
@@ -16,7 +13,7 @@ public class RenewableEnergyProvider {
     // o passate ai metodi. Per semplicità, alcune diventano membri.
     private static String broker = "tcp://localhost:1883";
     private static String baseTopic = "home/renewableEnergyProvider/power"; // Il tuo topic originale
-    private static int qos = 2;
+    private static int qos = 1;
 
     // Nuovi membri per la logica di accodamento e ACK
     private static MqttClient mqttClientInstance; // Istanza condivisa del client MQTT
@@ -24,33 +21,39 @@ public class RenewableEnergyProvider {
     private static final String ENERGY_REQUEST_PUBLISH_TOPIC = baseTopic + "/new"; // Topic per pubblicare richieste arricchite
     private static final String ENERGY_ACK_TOPIC = baseTopic + "/ack";   // Topic per ricevere ACK
 
-    private static final Deque<RequestDetails> requestsToProcessQueue = new ConcurrentLinkedDeque<>();
-    private static final Map<String, RequestDetails> pendingAckMap = new ConcurrentHashMap<>();
-    private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2); // 1 per pubblicare, 1 per il generatore
+    private static final Deque<RequestDetails> newRequestsQueue = new LinkedList<>(); // NUOVO
+    private static final Object newRequestsQueueLock = new Object();
+    private static final Map<String, RequestDetails> pendingAckMap = new HashMap<>(); // NUOVO
+    private static final Object pendingAckMapLock = new Object();
 
+    private static final Deque<RequestDetails> retryQueue = new LinkedList<>(); // NUOVO
+    private static final Object retryQueueLock = new Object();
+    private static volatile boolean repRunning = true; // Per fermare i thread
+
+    private static final long GENERATE_NEW_REQUEST_INTERVAL_MS = 10000;
+    private static final long PUBLISH_CHECK_INTERVAL_MS = 2000;
     private static final long ACK_TIMEOUT_MS = 7000; // Timeout per ACK
     private static final int MAX_PUBLISH_ATTEMPTS = 3; // Max tentativi per richiesta
 
     // Inner class per i dettagli della richiesta
     static class RequestDetails {
         final String requestId;
-        final double kwhValue; // Il valore originale generato
+        final double kwhValue;
         final long createdAt;
-        long lastPublishedAt;
+        long lastPublishedAt; // Quando è stato pubblicato l'ultima volta (per timeout)
         int publishAttempts;
-        ScheduledFuture<?> ackTimeoutTask;
+        // ScheduledFuture<?> ackTimeoutTask; // RIMUOVI QUESTO
 
         public RequestDetails(String requestId, double kwhValue) {
             this.requestId = requestId;
             this.kwhValue = kwhValue;
             this.createdAt = System.currentTimeMillis();
             this.publishAttempts = 0;
+            this.lastPublishedAt = 0; // 0 significa non ancora pubblicato o timeout scaduto
         }
     }
 
-    // Il costruttore può rimanere vuoto o fare inizializzazioni leggere
     public RenewableEnergyProvider() {}
-
 
     // Metodo per avviare la logica aggiuntiva (chiamato una volta)
     public static void initializeAdvancedFeatures() throws MqttException {
@@ -78,157 +81,232 @@ public class RenewableEnergyProvider {
                 JSONObject ackPayload = new JSONObject(payloadStr);
                 String ackRequestId = ackPayload.getString("requestId");
 
-                RequestDetails rDetails = pendingAckMap.remove(ackRequestId);
-                if (rDetails != null) {
-                    if (rDetails.ackTimeoutTask != null) {
-                        rDetails.ackTimeoutTask.cancel(false);
+                synchronized (pendingAckMapLock) {
+                    RequestDetails rDetails = pendingAckMap.remove(ackRequestId);
+                    if (rDetails != null) {
                         System.out.println("REP AckListener: Request " + ackRequestId + " ACKNOWLEDGED.");
+                        // Non c'è più un ackTimeoutTask da cancellare direttamente
+                    } else {
+                        System.out.println("REP AckListener: ACK for unknown/handled request: " + ackRequestId);
                     }
-                } else {
-                    System.out.println("REP AckListener: ACK for unknown/handled request: " + ackRequestId);
                 }
-            } catch (Exception e) {
+            }catch (Exception e) {
                 System.err.println("REP AckListener: Error parsing ACK: " + payloadStr + " - " + e.getMessage());
             }
         });
         System.out.println("REP AckListener: Subscribed to ACK topic: " + ENERGY_ACK_TOPIC);
 
-        // Avvia il task che processa requestsToProcessQueue e pubblica
-        scheduler.scheduleWithFixedDelay(RenewableEnergyProvider::processAndPublishRequests,
-                1, 2, TimeUnit.SECONDS); // Inizia dopo 1s, poi ogni 2s
     }
 
     // Nuovo metodo che il main chiamerà invece di client.publish()
     private static void enqueueNewEnergyNeed(double kwhValue, String originalClientId) {
         String requestId = "REQ-" + UUID.randomUUID().toString().substring(0, 8) + "-" + originalClientId.substring(0, Math.min(4,originalClientId.length()));
         RequestDetails newReq = new RequestDetails(requestId, kwhValue);
-        requestsToProcessQueue.addLast(newReq);
+        synchronized (newRequestsQueueLock) {
+            newRequestsQueue.addLast(newReq);
+        }
         System.out.println("REP ("+originalClientId+"): Energy need for " + String.format("%.2f", kwhValue) +
-                " kWh (ID: " + requestId + ") enqueued. Queue size: " + requestsToProcessQueue.size());
+                " kWh (ID: " + requestId + ") enqueued. Queue size: " + newRequestsQueue.size());
     }
 
-    private static void processAndPublishRequests() {
-        RequestDetails requestToPublish = null;
-
-        // Priorità alla retryQueue (se l'avessimo separata, per ora prendiamo da requestsToProcessQueue)
-        // Se una richiesta è in pendingAckMap e il suo timer scade, verrà rimessa in requestsToProcessQueue
-        // Per ora, processiamo semplicemente la testa di requestsToProcessQueue
-        if (!requestsToProcessQueue.isEmpty()) {
-            requestToPublish = requestsToProcessQueue.pollFirst(); // Prendi e rimuovi
-        }
-
-        if (requestToPublish != null) {
-            if (requestToPublish.publishAttempts >= MAX_PUBLISH_ATTEMPTS) {
-                System.out.println("REP Publisher: Request " + requestToPublish.requestId + " max retries. Discarding.");
-                // Rimuovi da pendingAckMap se per caso fosse lì (es. timeout e ripubblicazione fallita)
-                RequestDetails prevPending = pendingAckMap.remove(requestToPublish.requestId);
-                if(prevPending != null && prevPending.ackTimeoutTask != null) prevPending.ackTimeoutTask.cancel(true);
-                return;
-            }
-
-            requestToPublish.lastPublishedAt = System.currentTimeMillis();
-            requestToPublish.publishAttempts++;
-
-            JSONObject payloadJson = new JSONObject();
-            payloadJson.put("requestId", requestToPublish.requestId);
-            payloadJson.put("kWh", requestToPublish.kwhValue); // Il valore energetico originale
-            payloadJson.put("timestamp", requestToPublish.lastPublishedAt);
-            payloadJson.put("attempt", requestToPublish.publishAttempts);
-            String payloadToSend = payloadJson.toString();
-
+    private static void processAndPublishRequestsLoop() {
+        System.out.println("REP: Main Publisher Loop STARTED.");
+        while (repRunning && !Thread.currentThread().isInterrupted()) {
             try {
-                // Assumiamo che il main abbia già connesso mqttClientInstance o che ne creiamo uno qui.
-                // Per questo esempio, il main dovrebbe passare la sua istanza 'client'
-                // o dobbiamo usare un'istanza condivisa.
-                // Per ora, questo metodo dovrebbe avere accesso a un MqttClient connesso.
-                // Se il client del main è locale, questo non funzionerà direttamente.
-                // Modifichiamo per usare mqttClientInstance che deve essere inizializzato nel main.
-
-                MqttMessage message = new MqttMessage(payloadToSend.getBytes(StandardCharsets.UTF_8));
-                message.setQos(qos); // Usa il qos definito nel main
-
-                if (mqttClientInstance == null || !mqttClientInstance.isConnected()) {
-                    System.err.println("REP Publisher: Main MQTT client not available for publishing request " + requestToPublish.requestId);
-                    requestsToProcessQueue.addFirst(requestToPublish); // Rimetti in testa per riprovare
-                    requestToPublish.publishAttempts--;
-                    return;
+                RequestDetails requestToPublish = null;
+                synchronized (retryQueueLock) {
+                    if (!retryQueue.isEmpty()) {
+                        requestToPublish = retryQueue.pollFirst();
+                    }
+                }
+                if (requestToPublish != null) {
+                    System.out.println("REP: Attempting to republish (from retry queue): " + requestToPublish.requestId);
+                } else {
+                    synchronized (newRequestsQueueLock) {
+                        if (!newRequestsQueue.isEmpty()) {
+                            requestToPublish = newRequestsQueue.pollFirst();
+                        }
+                    }
+                    if (requestToPublish != null) {
+                        System.out.println("REP: Attempting to publish new request: " + requestToPublish.requestId);
+                    }
                 }
 
-                mqttClientInstance.publish(ENERGY_REQUEST_PUBLISH_TOPIC, message);
-                System.out.println("REP Publisher: PUBLISHED (Attempt " + requestToPublish.publishAttempts +
-                        ") Request ID: " + requestToPublish.requestId + ", Payload: " + payloadToSend);
+                if (requestToPublish != null) {
+                    publishRequestInternal(requestToPublish);
+                }
 
-                pendingAckMap.put(requestToPublish.requestId, requestToPublish);
-                final String reqIdForTimeout = requestToPublish.requestId;
-
-                requestToPublish.ackTimeoutTask = scheduler.schedule(() -> {
-                    RequestDetails timedOutRequest = pendingAckMap.remove(reqIdForTimeout);
-                    if (timedOutRequest != null) {
-                        System.out.println("REP Publisher: ACK TIMEOUT for " + timedOutRequest.requestId +
-                                " (Attempt " + timedOutRequest.publishAttempts + "). Re-enqueueing.");
-                        requestsToProcessQueue.addFirst(timedOutRequest); // Rimetti in testa alla coda principale
-                    }
-                }, ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-
-            } catch (MqttException e) {
-                System.err.println("REP Publisher: MQTT Error publishing " + requestToPublish.requestId + ": " + e.getMessage());
-                requestToPublish.publishAttempts--; // Non conta come tentativo
-                requestsToProcessQueue.addFirst(requestToPublish); // Rimetti in testa
+                Thread.sleep(PUBLISH_CHECK_INTERVAL_MS); // Intervallo di controllo
+            } catch (InterruptedException e) {
+                System.out.println("REP: Main Publisher Loop interrupted.");
+                repRunning = false;
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                System.err.println("REP: Error in Main Publisher Loop: " + e.getMessage());
+                e.printStackTrace();
             }
+        }
+        System.out.println("REP: Main Publisher Loop STOPPED.");
+    }
+
+    private static void publishRequestInternal(RequestDetails request) {
+        // 1. Controlla se il client MQTT è connesso e pronto
+        if (mqttClientInstance == null || !mqttClientInstance.isConnected()) {
+            System.err.println("REP Publisher: MQTT client non connesso. Impossibile pubblicare la richiesta " + request.requestId);
+            // In un design più semplice, potremmo tentare di riconnetterci qui,
+            // ma per ora logghiamo solo l'errore. Il thread principale riproverà al prossimo ciclo.
+            return;
+        }
+
+        // 2. Costruisci il payload JSON
+        JSONObject payloadJson = new JSONObject();
+        payloadJson.put("requestId", request.requestId);
+        payloadJson.put("kWh", request.kwhValue);
+        payloadJson.put("timestamp", request.createdAt); // Usiamo il timestamp di creazione originale
+
+        String payloadToSend = payloadJson.toString();
+
+        try {
+            // 3. Crea il messaggio MQTT
+            MqttMessage message = new MqttMessage(payloadToSend.getBytes(StandardCharsets.UTF_8));
+            message.setQos(qos);
+
+            // ---- LA MODIFICA CHIAVE ----
+            // Imposta il flag "retained" a true.
+            // Questo dice al broker di conservare questo messaggio per questo topic.
+            message.setRetained(true);
+            // --------------------------
+
+            // 4. Pubblica il messaggio
+            mqttClientInstance.publish(ENERGY_REQUEST_PUBLISH_TOPIC, message);
+
+            System.out.println("REP Publisher: PUBLISHED (retained) Request ID: '" + request.requestId +
+                    "', kWh: " + String.format("%.2f", request.kwhValue) +
+                    ", Topic: " + ENERGY_REQUEST_PUBLISH_TOPIC);
+
+        } catch (MqttException e) {
+            System.err.println("REP Publisher: Errore MQTT durante la pubblicazione della richiesta '" + request.requestId + "': " + e.getMessage());
+            // Aggiungi qui la gestione degli errori, ad es. logging, tentativi di riconnessione, ecc.
+            e.printStackTrace();
         }
     }
 
+    private static void manageAckTimeoutsLoop() {
+        System.out.println("REP: ACK Timeout Manager Loop STARTED.");
+        while (repRunning && !Thread.currentThread().isInterrupted()) {
+            try {
+                long currentTime = System.currentTimeMillis();
+                List<String> timedOutRequestIds = new ArrayList<>();
+
+                synchronized (pendingAckMapLock) {
+                    // Itera su una copia per evitare ConcurrentModificationException se modifichi la mappa
+                    for (Map.Entry<String, RequestDetails> entry : new HashMap<>(pendingAckMap).entrySet()) {
+                        RequestDetails req = entry.getValue();
+                        if (req.lastPublishedAt > 0 && (currentTime - req.lastPublishedAt > ACK_TIMEOUT_MS)) {
+                            timedOutRequestIds.add(req.requestId);
+                        }
+                    }
+
+                    for (String reqId : timedOutRequestIds) {
+                        RequestDetails timedOutRequest = pendingAckMap.remove(reqId); // Rimuovi
+                        if (timedOutRequest != null) {
+                            System.out.println("REP: ACK TIMEOUT for " + timedOutRequest.requestId + ". Adding to retry queue.");
+                            synchronized (retryQueueLock) {
+                                retryQueue.addLast(timedOutRequest); // Aggiungi per riprovare
+                            }
+                        }
+                    }
+                }
+                Thread.sleep(1000); // Controlla i timeout ogni secondo
+            } catch (InterruptedException e) {
+                System.out.println("REP: ACK Timeout Manager Loop interrupted.");
+                repRunning = false;
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                System.err.println("REP: Error in ACK Timeout Manager Loop: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }
+        System.out.println("REP: ACK Timeout Manager Loop STOPPED.");
+    }
 
     // IL TUO METODO MAIN MODIFICATO MINIMAMENTE
     public static void main(String[] argv) {
-        // Le variabili broker, clientId, topic (ora baseTopic), qos sono già membri statici
-
-        // clientId è per il publisher principale
-        String publisherClientId = MqttClient.generateClientId();
+        String publisherClientId = "RenewableEnergyProvider_" + UUID.randomUUID().toString().substring(0, 8);
+        MemoryPersistence persistence = new MemoryPersistence();
 
         try {
-            // Inizializza le funzionalità avanzate (listener ACK, scheduler per la coda di pubblicazione)
-            initializeAdvancedFeatures(); // Questo imposterà il listener per gli ACK
-
-            // Il client MQTT usato dal loop while(true) per pubblicare
-            mqttClientInstance = new MqttClient(broker, publisherClientId, new MemoryPersistence());
+            // 1. Connessione del client
+            mqttClientInstance = new MqttClient(broker, publisherClientId, persistence);
             MqttConnectOptions connOpts = new MqttConnectOptions();
             connOpts.setCleanSession(true);
-            // Non impostare setAutomaticReconnect qui se initializeAdvancedFeatures lo fa per il suo client,
-            // o assicurati che non ci siano conflitti se usano lo stesso client ID (cosa che non fanno).
+            connOpts.setAutomaticReconnect(true);
 
-            System.out.println("REP Publisher (" + publisherClientId + "): Connecting Broker " + broker);
+            System.out.println("REP (" + publisherClientId + "): Connessione al broker " + broker);
             mqttClientInstance.connect(connOpts);
-            System.out.println("REP Publisher (" + publisherClientId + "): Connected.");
+            System.out.println("REP (" + publisherClientId + "): Connesso.");
 
-            // Il tuo loop originale che GENERA l'esigenza energetica
-            while (true) {
-                // Genera il valore dell'energia
-                double kwhDemand = (Math.random() * (15000 - 5000 + 1) + 5000);
-                String originalPayloadValue = String.valueOf(kwhDemand); // Il tuo payload originale
+            // 2. Thread per generare e pubblicare richieste
+            Thread requestGeneratorThread = new Thread(() -> {
+                while (repRunning) {
+                    try {
+                        // Genera i dati della richiesta
+                        double kwhDemand = (Math.random() * (15000 - 5000 + 1) + 5000);
+                        String requestId = "REQ-" + UUID.randomUUID().toString().substring(0, 8);
+                        RequestDetails request = new RequestDetails(requestId, kwhDemand);
 
-                System.out.println("REP Generator (" + publisherClientId + "): Generated demand: " + originalPayloadValue + " kWh");
+                        // Pubblica direttamente
+                        publishRequestInternal(request);
 
-                // Invece di pubblicare direttamente, accoda la necessità
-                enqueueNewEnergyNeed(kwhDemand, publisherClientId);
+                        Thread.sleep(GENERATE_NEW_REQUEST_INTERVAL_MS);
 
-                Thread.sleep(10000); // Usa la costante
-            }
+                    } catch (InterruptedException e) {
+                        System.out.println("REP: Thread generatore interrotto.");
+                        repRunning = false;
+                        Thread.currentThread().interrupt();
+                    } catch (Exception e) {
+                        System.err.println("REP: Errore nel loop del generatore: " + e.getMessage());
+                        // Aggiungi un piccolo ritardo per evitare di spammare errori in caso di problemi persistenti
+                        try { Thread.sleep(2000); } catch (InterruptedException ie) {}
+                    }
+                }
+            });
+
+            // Gestione della chiusura pulita
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                System.out.println("REP: Shutdown in corso...");
+                repRunning = false;
+                try {
+                    // Opzionale: pulisci l'ultimo messaggio "retained" prima di chiudere
+                    MqttMessage clearMessage = new MqttMessage(new byte[0]); // Payload vuoto
+                    clearMessage.setQos(qos);
+                    clearMessage.setRetained(true);
+                    if (mqttClientInstance.isConnected()) {
+                        mqttClientInstance.publish(ENERGY_REQUEST_PUBLISH_TOPIC, clearMessage);
+                        System.out.println("REP: Messaggio 'retained' pulito dal topic.");
+                    }
+
+                    mqttClientInstance.disconnect();
+                    System.out.println("REP: Disconnesso dal broker.");
+                } catch (MqttException e) {
+                    System.err.println("REP: Errore durante la disconnessione: " + e.getMessage());
+                }
+                System.out.println("REP: Shutdown completato.");
+            }));
+
+            requestGeneratorThread.start();
+            System.out.println("REP: Provider avviato. Genera una nuova richiesta ogni " + (GENERATE_NEW_REQUEST_INTERVAL_MS / 1000) + " secondi.");
+            System.out.println("Premi Ctrl+C per uscire.");
+
+            // Mantieni il main thread vivo
+            requestGeneratorThread.join();
 
         } catch (MqttException me) {
-            System.out.println("reason " + me.getReasonCode());
-            System.out.println("msg " + me.getMessage());
-            // ... (resto della tua gestione eccezioni) ...
+            System.err.println("Errore MQTT fatale: " + me.getMessage());
             me.printStackTrace();
         } catch (InterruptedException e) {
-            e.printStackTrace();
+            System.out.println("Applicazione interrotta.");
         }
-        // Lo scheduler e il listener ACK continueranno a girare.
-        // Aggiungi uno shutdown hook per fermarli se necessario.
-        // Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-        //     scheduler.shutdownNow();
-        //     try { if (mqttClientInstance.isConnected()) mqttClientInstance.disconnect(); } catch (Exception ignored) {}
-        //     // ... ferma anche ackListenerClient ...
-        // }));
     }
+
 }

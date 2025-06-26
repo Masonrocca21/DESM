@@ -2,18 +2,17 @@ package client;
 
 import org.springframework.http.*;
 import org.springframework.web.client.RestTemplate;
-import ThermalPowerPlants.ThermalPowerPlants;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 
+import ThermalPowerPlants.ThermalPowerPlant;
+
 public class ClientAdmin {
 
     private static final RestTemplate restTemplate = new RestTemplate();
     private static final String serverAddress = "http://localhost:8080";
-
-    private int inputMenuSelection;
 
 
     public static void main(String[] args) throws IOException {
@@ -29,27 +28,6 @@ public class ClientAdmin {
             if (inputMenuSelection == 3) { break; }
 
             switch (inputMenuSelection) {
-                /* case 1: { //Se 2 Visualizzo la lista di tutte le piante termali
-                    //Setto per la get request
-                    String getPath = "/Administrator/getList";
-                    ResponseEntity<String> getResponse = getRequest(serverAddress + getPath );
-                    System.out.println(getResponse);
-                    System.out.println(getResponse.getBody());
-                }
-                break;
-                case 2: { // Se 3 fornisco i valori delle statistiche
-                    String getPath = "/Administrator/getPollution/";
-                    System.out.println("Enter timeA: ");
-                    int timeA = Integer.parseInt(inputStream.readLine());
-                    System.out.println("Enter timeB: ");
-                    int timeB = Integer.parseInt(inputStream.readLine());
-                    ResponseEntity<String> getResponse = getRequest(serverAddress + getPath + timeA + "/" + timeB); //Verificare se serve il lo slash
-                    System.out.println(getResponse);
-                    System.out.println(getResponse.getBody());
-                }
-                break;
-
-                 */
                 case 1:
                     listThermalPlants();
                     break;
@@ -67,13 +45,13 @@ public class ClientAdmin {
         }
     }
 
-    public static ResponseEntity<ThermalPowerPlants[]> postRequest(String url, ThermalPowerPlants dummyPlants) {
+    public static ResponseEntity<ThermalPowerPlant[]> postRequest(String url, ThermalPowerPlant dummyPlants) {
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
 
-            HttpEntity<ThermalPowerPlants> request = new HttpEntity<>(dummyPlants, headers);
-            return restTemplate.postForEntity(url, request, ThermalPowerPlants[].class);
+            HttpEntity<ThermalPowerPlant> request = new HttpEntity<>(dummyPlants, headers);
+            return restTemplate.postForEntity(url, request, ThermalPowerPlant[].class);
         } catch (Exception e) {
             System.out.println("Server not available: " + e.getMessage());
             return new ResponseEntity<>(HttpStatus.SERVICE_UNAVAILABLE);

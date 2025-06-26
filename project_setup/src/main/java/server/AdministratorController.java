@@ -7,7 +7,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import ThermalPowerPlants.ThermalPowerPlants;
+import ThermalPowerPlants.ThermalPowerPlant;
+import ThermalPowerPlants.PeerInfo;
 
 import java.util.List;
 import java.util.Map;
@@ -28,19 +29,14 @@ public class AdministratorController {
     }
 
     @PostMapping(value = "/add", consumes = {"application/json", "application/xml"})
-    public ResponseEntity<List<ThermalPowerPlants>> addThermalPlants(@RequestBody ThermalPowerPlants dummyPlants) {
+    public ResponseEntity<List<PeerInfo>> addThermalPlants(@RequestBody PeerInfo dummyPlants) {
         try {
-            String json = mapper.writeValueAsString(dummyPlants);
-            System.out.println("JSON inviato: " + json);
-            System.out.println("Ricevuto ID: " + dummyPlants.getId());
-            System.out.println("Ricevuto Address: " + dummyPlants.getAddress());
-            System.out.println("Ricevuto Port: " + dummyPlants.getPortNumber());
+            System.out.println("AdminController: Received request to add plant: " + dummyPlants);
 
-            List<ThermalPowerPlants> result = administrator.addThermalPlants(dummyPlants.getId(), dummyPlants.getAddress(), dummyPlants.getPortNumber());
+            List<PeerInfo> result = administrator.addPlant(dummyPlants);
             if (result == null) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
             } else {
-                //  Map<Integer, String> topology = administrator.getThermalPlantsExcept(dummyPlants.getId());
                 return ResponseEntity.ok(result);
             }
         } catch (Exception e) {
@@ -51,11 +47,11 @@ public class AdministratorController {
 
     @GetMapping(value = "/getList", produces = "text/plain")
     public ResponseEntity<String> getThermalPlants() {
-        if (administrator.getThermalPlants() == null) {
+        if (administrator.getAllRegisteredPlants() == null) {
             return ResponseEntity.ok("No Power Plant is present");
         }
 
-        return ResponseEntity.ok("Ecco la lista: " + administrator.getThermalPlants().toString());
+        return ResponseEntity.ok("Ecco la lista: " + administrator.getAllRegisteredPlants().toString());
     }
 
     @GetMapping(value = "/getPollution/{t1_ms}/{t2_ms}", produces = MediaType.APPLICATION_JSON_VALUE)

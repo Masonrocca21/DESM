@@ -24,8 +24,7 @@ public class SlidingWindowBuffer implements Buffer { // Implementa la TUA interf
     public void addMeasurement(Measurement m) { // Nome metodo corretto
         synchronized (lock) {
             measurementsWindow.add(m);
-            // System.out.println("Buffer (Plant " + /* come ottenere l'ID della pianta qui? */ "): Added " + m +
-            //                    ". Window size: " + measurementsWindow.size());
+
 
             if (measurementsWindow.size() >= windowSize) {
                 computeAndStoreAverage();

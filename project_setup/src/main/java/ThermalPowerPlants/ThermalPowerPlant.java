@@ -1,0 +1,338 @@
+package ThermalPowerPlants;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.List;
+import java.util.Random;
+import java.util.Timer;
+import java.util.TimerTask;
+
+// Importazioni per il sensore e il buffer
+import Simulators.Buffer;
+import Simulators.PollutionSensor;
+
+// Importazione dell'implementazione del buffer
+// Assumendo che sia in un package 'com.example.powerplants'
+import PollutionManagement.SlidingWindowBuffer;
+
+// Importazione per il client MQTT (esempio con Paho)
+import org.eclipse.paho.client.mqttv3.MqttClient;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
+import org.eclipse.paho.client.mqttv3.MqttException;
+import org.eclipse.paho.client.mqttv3.MqttMessage;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
+
+/**
+ * La classe ThermalPowerPlant rappresenta l'entità logica di una centrale termica.
+ * Gestisce il proprio stato operativo, la logica di business, il sensore di inquinamento
+ * e delega le operazioni di rete al NetManager.
+ */
+/**
+ * La classe ThermalPowerPlant rappresenta l'entità logica di una centrale termica.
+ * Gestisce il proprio stato operativo, la logica di business, il sensore di inquinamento
+ * e delega le operazioni di rete al NetManager.
+ */
+public class ThermalPowerPlant {
+
+    // --- CAMPI (VARIABILI DI ISTANZA) ---
+    private final int id;
+    private final String grpcAddress;
+    private final int grpcPort;
+    private final String adminServerUrl = "http://localhost:8080";;
+    private final PeerInfo selfInfo;
+
+    private final NetManager netManager;
+    private final Random priceGenerator;
+
+    private final SlidingWindowBuffer  pollutionBuffer;
+    private final PollutionSensor pollutionSensor;
+    private final Timer dataSenderTimer;
+    private MqttClient mqttAdminClient;
+    private final String MQTT_BROKER = "tcp://localhost:1883";
+    private final String ADMIN_POLLUTION_TOPIC = "DESM/pollution_stats";
+
+    private enum PlantState { STARTING, IDLE, IN_ELECTION, BUSY }
+    private volatile PlantState currentState;
+    private final Object stateLock = new Object();
+
+    private String currentElectionRequestId;
+    private double currentOfferPrice;
+    private double currentKwhRequest;
+
+
+    // --- COSTRUTTORE ---
+    public ThermalPowerPlant(int id, String grpcAddress, int grpcPort) {
+        this.id = id;
+        this.grpcAddress = grpcAddress;
+        this.grpcPort = grpcPort;
+
+        this.selfInfo = new PeerInfo(id, grpcAddress, grpcPort);
+
+        this.netManager = new NetManager(this);
+        this.priceGenerator = new Random();
+
+        this.pollutionBuffer = new SlidingWindowBuffer();
+        this.pollutionSensor = new PollutionSensor(this.pollutionBuffer);
+        this.dataSenderTimer = new Timer("DataSenderTimer-Plant" + id, true);
+
+        this.currentState = PlantState.STARTING;
+    }
+
+    // --- METODI PUBBLICI PRINCIPALI ---
+    public void start() {
+        System.out.println("Plant " + id + ": Initializing...");
+        try {
+            String mqttClientId = "Plant-" + id + "-AdminClient";
+            mqttAdminClient = new MqttClient(MQTT_BROKER, mqttClientId, new MemoryPersistence());
+            MqttConnectOptions connOpts = new MqttConnectOptions();
+            connOpts.setCleanSession(true);
+            mqttAdminClient.connect(connOpts);
+            System.out.println("Plant " + id + ": Connected to MQTT Broker for admin communication.");
+        } catch (MqttException e) {
+            System.err.println("Plant " + id + ": Failed to connect to MQTT broker. Admin data will not be sent.");
+            e.printStackTrace();
+        }
+
+        this.pollutionSensor.start();
+        System.out.println("Plant " + id + ": Pollution sensor started.");
+
+        netManager.start(); // Il NetManager ora gestisce la registrazione con l'admin server
+
+        startScheduledDataSending();
+        System.out.println("Plant " + id + ": Scheduled data sending to admin server started.");
+
+        synchronized (stateLock) {
+            this.currentState = PlantState.IDLE;
+        }
+        System.out.println("Plant " + id + ": Startup complete. Current state is IDLE.");
+    }
+
+    public void shutdown() {
+        System.out.println("Plant " + id + ": Shutting down...");
+        this.pollutionSensor.stopMeGently();
+        this.dataSenderTimer.cancel();
+        this.netManager.shutdown();
+
+        try {
+            if (this.mqttAdminClient != null && this.mqttAdminClient.isConnected()) {
+                this.mqttAdminClient.disconnect();
+            }
+        } catch (MqttException e) {
+            System.err.println("Plant " + id + ": Error disconnecting MQTT client.");
+        }
+        System.out.println("Plant " + id + ": Shutdown complete.");
+    }
+
+    // --- METODI DI CALLBACK (chiamati dal NetManager) ---
+    public void onEnergyRequest(String requestId, double kwh) {
+        boolean joining = false;
+        synchronized (stateLock) {
+            if (currentState == PlantState.IDLE) {
+                currentState = PlantState.IN_ELECTION;
+                joining = true;
+            }
+        }
+        if (joining) {
+            System.out.println("Plant " + id + ": Joining election for request '" + requestId + "'.");
+            this.currentKwhRequest = kwh; // Salva i kWh
+            this.currentElectionRequestId = requestId;
+            this.currentOfferPrice = generatePrice();
+            System.out.println("Plant " + id + ": My offer price is " + String.format("%.2f", currentOfferPrice));
+
+            // Ora diciamo al NetManager di avviare l'elezione con i nostri dati.
+            netManager.startElection(requestId, kwh, this.id, this.currentOfferPrice);
+        }
+    }
+
+    public void onElectionResult(String requestId, int winnerId) {
+        synchronized (stateLock) {
+            if (currentState != PlantState.IN_ELECTION || !requestId.equals(this.currentElectionRequestId)) {
+                return;
+            }
+            if (winnerId == this.id) {
+                System.out.println("Plant " + id + ": I WON election for '" + requestId + "'! Switching to BUSY.");
+                currentState = PlantState.BUSY;
+                simulateEnergyProduction(this.currentKwhRequest);
+            } else {
+                System.out.println("Plant " + id + ": Election for '" + requestId + "' won by Plant " + winnerId + ". Returning to IDLE.");
+                currentState = PlantState.IDLE;
+            }
+            this.currentElectionRequestId = null;
+            this.currentOfferPrice = 0.0;
+        }
+    }
+
+    // --- METODI PRIVATI ---
+    private void simulateEnergyProduction(double kwhToProduce) {
+        // --- MODIFICA CHIAVE #2 ---
+        // Calcoliamo la durata della simulazione.
+        // Usiamo Math.round per avere un long.
+        final long productionTimeMs = Math.round(kwhToProduce * 1.0); // 1 ms per kWh
+
+        new Thread(() -> {
+            try {
+                System.out.println("Plant " + id + ": Starting energy production for " + String.format("%.0f", kwhToProduce) + " kWh. "
+                        + "This will take " + productionTimeMs + " ms (" + String.format("%.2f", productionTimeMs / 1000.0) + " seconds).");
+                Thread.sleep(productionTimeMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Plant " + id + ": Energy production was interrupted.");
+            } finally {
+                synchronized (stateLock) {
+                    System.out.println("Plant " + id + ": Production complete. Returning to IDLE state.");
+                    this.currentState = PlantState.IDLE;
+                    this.currentKwhRequest = 0; // Resetta per pulizia
+                }
+            }
+        }).start();
+    }
+
+    private double generatePrice() {
+        return 0.1 + (priceGenerator.nextDouble() * 0.8);
+    }
+
+    private void startScheduledDataSending() {
+        TimerTask sendingTask = new TimerTask() {
+            @Override
+            public void run() {
+                List<Double> averagesToSend = pollutionBuffer.getComputedAveragesAndClear();
+
+                    if (!averagesToSend.isEmpty()) {
+                        System.out.println("\n--- SENDING POLLUTION DATA (Plant " + id + ") ---");
+
+                        String payload = formatDataForMqtt(averagesToSend);
+                        System.out.println("LOG (TPP " + id + "): Publishing to topic '" + ADMIN_POLLUTION_TOPIC + "'. Payload: " + payload);
+
+                        try {
+                            if (mqttAdminClient != null && mqttAdminClient.isConnected()) {
+                                MqttMessage message = new MqttMessage(payload.getBytes());
+                                message.setQos(1);
+                                mqttAdminClient.publish(ADMIN_POLLUTION_TOPIC, message);
+                                System.out.println("LOG (TPP " + id + "): Payload published successfully.");
+                            }
+                        } catch (MqttException e) {
+                            System.err.println("Plant " + id + ": Failed to publish pollution data.");
+                        }
+                }
+            }
+        };
+        dataSenderTimer.scheduleAtFixedRate(sendingTask, 10000, 10000);
+    }
+
+    private String formatDataForMqtt(List<Double> averages) {
+        StringBuilder json = new StringBuilder();
+        json.append("{");
+        json.append("\"plantId\":").append(this.id).append(",");
+        json.append("\"timestamp\":").append(System.currentTimeMillis()).append(",");
+        json.append("\"averagesCO2\": [");
+        for (int i = 0; i < averages.size(); i++) {
+            json.append(String.format("%.2f", averages.get(i)).replace(",", "."));
+            if (i < averages.size() - 1) json.append(",");
+        }
+        json.append("]");
+        json.append("}");
+        return json.toString();
+    }
+
+    // --- GETTERS ---
+    public PeerInfo getPeerInfo() { return this.selfInfo; }
+    public int getId() { return this.id; }
+    public double getCurrentOfferPrice() {
+        return this.currentOfferPrice;
+    }
+
+    public NetManager getNetManager() { return this.netManager; }
+
+    public boolean isIdle() {
+        return this.currentState == PlantState.IDLE;
+    }
+
+    public String getCurrentStateName() {
+        return this.currentState.name();
+    }
+
+    public void setAsIdle() {
+        synchronized (stateLock) {
+            this.currentState = PlantState.IDLE;
+        }
+        System.out.println("--- Plant " + id + ": Status changed to IDLE. Ready for elections. ---");
+    }
+
+    public void onJoinElection(String requestId, double kwh) {
+        synchronized(stateLock) {
+            if (currentState == PlantState.IDLE) {
+                currentState = PlantState.IN_ELECTION;
+                this.currentElectionRequestId = requestId;
+                this.currentOfferPrice = generatePrice();
+                this.currentKwhRequest = kwh; // Salva i kWh
+                System.out.println("Plant " + id + ": Generated my offer for ongoing election: " + String.format("%.2f", currentOfferPrice));
+            }
+        }
+    }
+
+
+    // --- MAIN ---
+    public static void main(String[] args) {
+        // --- 1. Preparazione per l'Input Utente ---
+        BufferedReader inputStream = new BufferedReader(new InputStreamReader(System.in));
+        int id;
+        String address;
+        int port;
+
+
+        System.out.println("--- Configure New Thermal Power Plant ---");
+
+        // --- 2. Richiesta Interattiva dei Parametri ---
+        try {
+            System.out.print("Enter Plant ID: ");
+            id = Integer.parseInt(inputStream.readLine());
+
+            System.out.print("Enter gRPC Address: ");
+            address = inputStream.readLine();
+
+            System.out.print("Enter gRPC Port: ");
+            port = Integer.parseInt(inputStream.readLine());
+
+
+        } catch (NumberFormatException | IOException e) {
+            System.err.println("ERROR: Invalid input. Please enter valid data.");
+            e.printStackTrace();
+            System.exit(1);
+            return;
+        }
+
+        // --- 3. Creazione e Avvio dell'Istanza della Centrale ---
+        System.out.println("\n--- Starting Thermal Power Plant Instance ---");
+        System.out.println("  ID: " + id);
+        System.out.println("  gRPC Address: " + address + ":" + port);
+        System.out.println("-------------------------------------------");
+
+        try {
+            ThermalPowerPlant plant = new ThermalPowerPlant(id, address, port);
+
+            // Aggiunge uno "shutdown hook" per una chiusura pulita con Ctrl+C.
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                System.out.println("\nShutdown signal received. Cleaning up resources for Plant " + id + "...");
+                plant.shutdown();
+                System.out.println("Cleanup for Plant " + id + " complete. Exiting.");
+            }));
+
+            // Avvia la logica principale della centrale.
+            plant.start();
+
+            // Mantiene il thread principale vivo per impedire alla JVM di terminare.
+            // Il server gRPC in background manterrà comunque l'applicazione attiva,
+            // ma questo è un modo esplicito per attendere indefinitamente.
+            System.out.println("\nPlant " + id + " is running. Press Ctrl+C to exit.");
+            Thread.currentThread().join();
+
+        } catch (Exception e) {
+            System.err.println("An unexpected error occurred during plant startup or operation.");
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+
+}

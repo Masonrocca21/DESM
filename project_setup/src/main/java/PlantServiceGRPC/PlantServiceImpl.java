@@ -7,38 +7,16 @@ import com.example.powerplants.ElectedMessage;
 import com.example.powerplants.PlantInfoMessage;
 import com.example.powerplants.Ack;
 
-import ThermalPowerPlants.ThermalPowerPlants;
-import ThermalPowerPlants.ThermalPowerPlantInfo;
+import ThermalPowerPlants.ThermalPowerPlant;
+import ThermalPowerPlants.NetManager;
 
 public class PlantServiceImpl extends PlantServiceGrpc.PlantServiceImplBase {
 
-    private final ThermalPowerPlants plant;
+  /*  private final ThermalPowerPlants plant;
 
     public PlantServiceImpl(ThermalPowerPlants plant) {
         this.plant = plant;
     }
-    /* @Override
-    public void handleEnergyRequest(EnergyRequest request, StreamObserver<EnergyResponse> responseObserver) {
-        // Logica per decidere se soddisfare la richiesta
-        int requiredEnergy = request.getRequiredEnergy();
-        int requestId = request.getRequestId();
-
-        System.out.println("Ricevuta richiesta gRPC: richiesta energia ID=" + requestId + ", quantità=" + requiredEnergy);
-
-        // Avvia l'elezione dalla pianta che riceve la richiesta
-        plant.handleIncomingEnergyRequest();
-
-        // Risposta immediata per confermare la ricezione (non che può soddisfare)
-        EnergyResponse response = EnergyResponse.newBuilder()
-                .setCanHandle(false)
-                .setMessage("Elezione avviata da pianta " + plant.getId())
-                .build();
-
-        responseObserver.onNext(response);
-        responseObserver.onCompleted();
-    }
-
-     */
     @Override
     public void sendElection(ElectionMessage request, StreamObserver<Ack> responseObserver) {
 
@@ -80,4 +58,52 @@ public class PlantServiceImpl extends PlantServiceGrpc.PlantServiceImplBase {
         responseObserver.onNext(ack);
         responseObserver.onCompleted();
     }
+    */
+
+    // Riferimento al "cervello" della centrale.
+    private final ThermalPowerPlant plant;
+    // Riferimento diretto al NetManager per comodità.
+    private final NetManager netManager;
+
+    public PlantServiceImpl(ThermalPowerPlant plant) {
+        if (plant == null) {
+            throw new IllegalArgumentException("ThermalPowerPlant instance cannot be null");
+        }
+        this.plant = plant;
+        this.netManager = plant.getNetManager(); // Assumendo che TPP abbia un getter per il suo NetManager
+        if (this.netManager == null) {
+            throw new IllegalStateException("NetManager has not been initialized in ThermalPowerPlant");
+        }
+    }
+
+    @Override
+    public void sendElection(ElectionMessage request, StreamObserver<Ack> responseObserver) {
+        // Quando riceve una chiamata "sendElection", la passa al metodo che gestisce
+        // i messaggi di elezione in arrivo.
+        netManager.handleElectionMessage(request);
+
+        // Risponde con un ACK per confermare la ricezione.
+        responseObserver.onNext(Ack.newBuilder().setMessage("OK").build());
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void sendElected(ElectedMessage request, StreamObserver<Ack> responseObserver) {
+        netManager.handleElectedMessage(request);
+        responseObserver.onNext(Ack.newBuilder().setMessage("OK").build());
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void announcePresence(PlantInfoMessage request, StreamObserver<Ack> responseObserver) {
+        // PRIMISSIMA RIGA DEL METODO
+        System.out.println("\nLOG (Plant " + plant.getId() + ", ServiceImpl): gRPC call 'announcePresence' RECEIVED from Plant " + request.getId() + ".\n");
+
+        netManager.handleAnnouncePresence(request);
+
+        Ack ack = Ack.newBuilder().setMessage("Welcome Plant " + request.getId()).build();
+        responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
 }

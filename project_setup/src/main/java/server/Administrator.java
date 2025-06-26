@@ -1,11 +1,9 @@
 package server;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
-import ThermalPowerPlants.ThermalPowerPlants;
-import client.PollutionStatsResponse;
-
+import ThermalPowerPlants.ThermalPowerPlant;
+import ThermalPowerPlants.PeerInfo;
 
 import org.springframework.stereotype.Service;
 
@@ -22,15 +20,26 @@ import org.json.JSONException;
 @Service //Spring automatically makes this class a singleton bean
 public class Administrator {
 
-    private final List<ThermalPowerPlants> ThermalPlants = new ArrayList<ThermalPowerPlants>();
-    private HashMap<Integer, String> informations = new HashMap<>();
+    private final List<PeerInfo> registeredPlantsInfo = new ArrayList<>(); // NUOVO
 
-    // Chiave: Plant ID, Valore: Lista di entry, dove ogni entry è un batch di medie inviate
-    private final Map<Integer, List<AdminPollutionEntry>> pollutionDataByPlantId = new ConcurrentHashMap<>();
+    private final Map<Integer, List<AdminPollutionEntry>> pollutionDataByPlantId = new HashMap<>(); // NUOVA
+    private final Object pollutionDataLock = new Object(); // NUOVO Lock per la mappa sopra
 
     private MqttClient mqttClient;
     private final String MQTT_BROKER = "tcp://localhost:1883"; // Configura secondo necessità
     private final String POLLUTION_TOPIC = "DESM/pollution_stats"; // Deve corrispondere a quello usato dalle piante
+    // Struttura per le statistiche di inquinamento
+    static class AdminPollutionEntry {
+        final long submissionTimestamp;
+        final List<Double> co2Averages;
+        public AdminPollutionEntry(long submissionTimestamp, List<Double> co2Averages) {
+            this.submissionTimestamp = submissionTimestamp;
+            this.co2Averages = Collections.unmodifiableList(new ArrayList<>(co2Averages));
+        }
+        public long getSubmissionTimestamp() { return submissionTimestamp; }
+        public List<Double> getCo2Averages() { return co2Averages; }
+    }
+
 
     public Administrator() {
         // L'inizializzazione del listener MQTT avverrà tramite @PostConstruct
@@ -71,9 +80,9 @@ public class Administrator {
                 public void messageArrived(String topic, MqttMessage message) throws Exception {
                     System.out.println("AdminServer: MQTT received message: " + new String(message.getPayload()));
                     String payloadStr = new String(message.getPayload()); // Ottieni la stringa JSON completa
+                    System.out.println("AdminServer (Callback): Received MQTT on '" + topic + "': " + payloadStr.substring(0, Math.min(150, payloadStr.length())) + "...");
 
                     try {
-                        // ----- USA DIRETTAMENTE org.json.JSONObject PER PARSARE L'INTERA STRINGA -----
                         JSONObject payloadJson = new JSONObject(payloadStr);
 
                         int plantId = -1;
@@ -125,6 +134,8 @@ public class Administrator {
                             System.err.println("AdminServer: Critical data (plantId or timestamp) missing after parsing. Payload: " + payloadStr);
                         }
 
+                        recordPollutionData(plantId, submissionTimestamp, averages); // Questa chiamata è ora thread-safe
+
                     } catch (org.json.JSONException e_json) { // Cattura specificamente le eccezioni di parsing JSON
                         System.err.println("AdminServer: Error parsing MAIN JSON payload: '" + payloadStr + "' - " + e_json.getMessage());
                         // e_json.printStackTrace(); // Utile per debug
@@ -174,132 +185,79 @@ public class Administrator {
             System.out.println("AdminServer: No averages to record for plant " + plantId);
             return;
         }
-        // computeIfAbsent è thread-safe per ConcurrentHashMap per quanto riguarda l'aggiunta della chiave.
-        // L'aggiunta alla lista è sicura qui perché ogni chiamata a recordPollutionData
-        // aggiunge una nuova AdminPollutionEntry a una lista potenzialmente nuova o esistente.
-        // Le liste stesse non sono modificate concorrentemente da più chiamate a recordPollutionData
-        // per la *stessa* lista in modo da causare problemi (una nuova entry viene solo appesa).
-        pollutionDataByPlantId.computeIfAbsent(plantId, k -> new ArrayList<>()) // ArrayList non è thread-safe di per sé,
-                // ma qui l'operazione composta è protetta
-                // da computeIfAbsent e l'aggiunta è singola.
-                // Per maggiore sicurezza, potresti usare
-                // una CopyOnWriteArrayList o sincronizzare
-                // l'accesso alla lista se ci fossero più
-                // modificatori per la *stessa* lista.
-                .add(new AdminPollutionEntry(submissionTimestamp, averages));
-        System.out.println("AdminServer: Recorded " + averages.size() + " pollution averages for plant " + plantId +
-                " (submitted at " + submissionTimestamp + ")");
+        synchronized (pollutionDataLock) {
+            pollutionDataByPlantId
+                    .computeIfAbsent(plantId, k -> new ArrayList<>())
+                    .add(new AdminPollutionEntry(submissionTimestamp, averages));
+        }
+            System.out.println("AdminServer: Recorded " + averages.size() + " pollution averages for plant " + plantId +
+                    " (submitted at " + submissionTimestamp + ")");
     }
 
-    // Metodo per calcolare la statistica richiesta dal client
-    // Il vecchio `public int getPollution(int timeA, int timeB)` deve essere sostituito/modificato
-    public PollutionStatsResponse getAveragePollutionBetween(long t1_ms, long t2_ms) {
-        double totalCo2Sum = 0;
-        int individualAveragesCount = 0; // Numero di singole medie considerate
-
-        // L'iterazione su .values() di ConcurrentHashMap è debolmente consistente.
-        // Va bene per letture statistiche che non richiedono una coerenza transazionale stretta
-        // con le scritture. Se necessario, si potrebbe usare un lock esterno.
-        for (List<AdminPollutionEntry> entriesForOnePlant : pollutionDataByPlantId.values()) {
-            for (AdminPollutionEntry entry : entriesForOnePlant) {
-                // Il timestamp da controllare è quello dell'invio del batch (submissionTimestamp)
-                if (entry.getSubmissionTimestamp() >= t1_ms && entry.getSubmissionTimestamp() <= t2_ms) {
-                    for (Double singleAvgCo2 : entry.getCo2Averages()) {
-                        totalCo2Sum += singleAvgCo2;
-                        individualAveragesCount++;
-                    }
+    // Modificato per accettare e restituire il DTO
+    public List<PeerInfo> addPlant(PeerInfo newPlantInfo) {
+        synchronized (this) {
+            // Controlla se esiste già una pianta con lo stesso ID
+            for (PeerInfo pInfo : registeredPlantsInfo) {
+                if (pInfo.getId() == newPlantInfo.getId()) {
+                    System.out.println("AdminServer: Plant with ID " + newPlantInfo.getId() + " already registered.");
+                    return null; // Indica conflitto o pianta già presente
                 }
             }
-        }
+            // Ottieni la lista delle piante esistenti PRIMA di aggiungere la nuova, se vuoi restituire solo quelle
+            // List<ThermalPowerPlantInfo> existingPlants = new ArrayList<>(registeredPlantsInfo);
 
-        if (individualAveragesCount == 0) {
-            System.out.println("AdminServer: No pollution data found in range [" + t1_ms + ", " + t2_ms + "] for average calculation.");
-            return new PollutionStatsResponse(0.0, 0);
-        }
+            registeredPlantsInfo.add(newPlantInfo);
+            // Ordina se la logica di anello della TPP si basa su una lista ordinata ricevuta
+            registeredPlantsInfo.sort(Comparator.comparingInt(PeerInfo::getId));
+            System.out.println("AdminServer: Added plant info: " + newPlantInfo + ". Total plants: " + registeredPlantsInfo.size());
 
-        double overallAverage = totalCo2Sum / individualAveragesCount;
-        System.out.println("AdminServer: Calculated overall CO2 average: " + String.format("%.2f", overallAverage) +
-                " from " + individualAveragesCount + " individual average readings in range [" + t1_ms + ", " + t2_ms + "].");
-        return new PollutionStatsResponse(overallAverage, individualAveragesCount);
-    }
-
-    public List<ThermalPowerPlants> addThermalPlants(int ID, String address, int port) {
-        synchronized (this) {
-            ThermalPowerPlants dummyPlants = new ThermalPowerPlants(ID, address, port, "http://localhost:8080");
-            if (isPresent(dummyPlants)) {
-                System.out.println("Adding ThermalPlants not possible because already there!!");
-                return null;
-            }
-            else {
-                ThermalPlants.add(dummyPlants);
-                System.out.println("Added ThermalPlant: " + dummyPlants);
-                System.out.println("Lista piante della nuova pianta: " + dummyPlants.getAllPlants().toString());
-                return ThermalPlants;
-            }
+            // La specifica dice che TPP riceve la lista delle piante *già presenti*.
+            // Se vuoi aderire a questo, restituisci 'existingPlants'.
+            // Se vuoi restituire la lista COMPLETA (inclusa la nuova), che è ciò che il tuo
+            // client si aspetta (ThermalPowerPlantInfo[]), allora restituisci una copia di registeredPlantsInfo.
+            return new ArrayList<>(registeredPlantsInfo); // Restituisce la lista completa
         }
     }
 
-    public List<ThermalPowerPlants> getThermalPlants() {
+    public List<PeerInfo> getAllRegisteredPlants() { // Per l'endpoint /getList
         synchronized (this) {
-            if (ThermalPlants.isEmpty()) { return null; }
-            return ThermalPlants;
-        }
-    }
-
-    public Map<Integer, String> getThermalPlantsExcept(int ID) {
-        Map<Integer, String> topology = new HashMap<>();
-        synchronized (this) {
-            for (ThermalPowerPlants t : ThermalPlants) {
-                if (t.getId() != ID) {
-                    topology.put(t.getId(), t.getAddress() + ":" + t.getPortNumber().toString());
-                     //Si dovrebbe poter togliere
-                }
+            if (registeredPlantsInfo.isEmpty()) {
+                return Collections.emptyList();
             }
-            return topology;
+            return new ArrayList<>(registeredPlantsInfo);
         }
     }
 
     public Map<String, Object> getAveragePollutionBetweenAsMap(long t1_ms, long t2_ms) {
         double totalCo2Sum = 0;
         int individualAveragesCount = 0;
+        Map<String, Object> responseMap = new HashMap<>();
 
-        // ... (la tua logica per calcolare totalCo2Sum e individualAveragesCount rimane la stessa) ...
-        for (List<AdminPollutionEntry> entriesForOnePlant : pollutionDataByPlantId.values()) {
-            for (AdminPollutionEntry entry : entriesForOnePlant) {
-                if (entry.getSubmissionTimestamp() >= t1_ms && entry.getSubmissionTimestamp() <= t2_ms) {
-                    for (Double singleAvgCo2 : entry.getCo2Averages()) {
-                        totalCo2Sum += singleAvgCo2;
-                        individualAveragesCount++;
+        // --- MODIFICA QUI ---
+        synchronized (pollutionDataLock) { // Usa il lock dedicato
+            for (List<AdminPollutionEntry> entriesForOnePlant : pollutionDataByPlantId.values()) {
+                for (AdminPollutionEntry entry : entriesForOnePlant) {
+                    if (entry.getSubmissionTimestamp() >= t1_ms && entry.getSubmissionTimestamp() <= t2_ms) {
+                        for (Double singleAvgCo2 : entry.getCo2Averages()) {
+                            totalCo2Sum += singleAvgCo2;
+                            individualAveragesCount++;
+                        }
                     }
                 }
             }
         }
+        // --------------------
 
-        Map<String, Object> responseMap = new HashMap<>();
         if (individualAveragesCount == 0) {
-            System.out.println("AdminServer: No pollution data found in range [" + t1_ms + ", " + t2_ms + "] for average calculation.");
             responseMap.put("averageCo2", 0.0);
             responseMap.put("readingsCount", 0);
         } else {
             double overallAverage = totalCo2Sum / individualAveragesCount;
-            System.out.println("AdminServer: Calculated overall CO2 average: " + String.format("%.2f", overallAverage) +
-                    " from " + individualAveragesCount + " individual average readings in range [" + t1_ms + ", " + t2_ms + "].");
             responseMap.put("averageCo2", overallAverage);
             responseMap.put("readingsCount", individualAveragesCount);
         }
+        System.out.println("AdminServer: Calculated overall CO2 average for range [" + t1_ms + "," + t2_ms + "]: " + responseMap);
         return responseMap;
-    }
-
-    private void UpdateInformations(String info, int i){
-        informations.put(i, info);
-    }
-
-    private boolean isPresent(ThermalPowerPlants dummyPlants) {
-        for (ThermalPowerPlants thermalPlant : ThermalPlants) {
-            if (Objects.equals(thermalPlant.getId(), dummyPlants.getId())) {
-                return true;
-            }
-        }
-        return false;
     }
 }
