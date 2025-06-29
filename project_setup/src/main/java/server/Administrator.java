@@ -2,6 +2,7 @@ package server;
 
 import java.util.*;
 
+import ThermalPowerPlants.PendingRequest;
 import ThermalPowerPlants.ThermalPowerPlant;
 import ThermalPowerPlants.PeerInfo;
 
@@ -28,6 +29,10 @@ public class Administrator {
     private MqttClient mqttClient;
     private final String MQTT_BROKER = "tcp://localhost:1883"; // Configura secondo necessità
     private final String POLLUTION_TOPIC = "DESM/pollution_stats"; // Deve corrispondere a quello usato dalle piante
+    private final String ENERGY_REQUEST_TOPIC = "home/renewableEnergyProvider/power/new";
+
+    private final LinkedList<PendingRequest> requestQueue = new LinkedList<>();
+    private final Object queueLock = new Object(); // Lock dedicato per la coda
     // Struttura per le statistiche di inquinamento
     static class AdminPollutionEntry {
         final long submissionTimestamp;
@@ -53,11 +58,10 @@ public class Administrator {
 
     private void setupMqttListener() {
         try {
-            String clientId = "AdminServer-PollutionMonitor-" + UUID.randomUUID().toString();
+            String clientId = "AdminServer-PollutionMonitor-" + UUID.randomUUID();
             mqttClient = new MqttClient(MQTT_BROKER, clientId, new MemoryPersistence()); // Aggiunto MemoryPersistence
             MqttConnectOptions connOpts = new MqttConnectOptions();
             connOpts.setCleanSession(true);
-            // connOpts.setAutomaticReconnect(true); // Considera per robustezza
 
             System.out.println("AdminServer: Connecting to MQTT broker: " + MQTT_BROKER);
             mqttClient.connect(connOpts);
@@ -68,6 +72,8 @@ public class Administrator {
                 public void connectComplete(boolean reconnect, String serverURI) {
                     System.out.println("AdminServer: MQTT connectComplete (reconnect=" + reconnect + "), subscribing to " + POLLUTION_TOPIC);
                     subscribeToPollutionTopic();
+                    System.out.println("AdminServer: MQTT connectComplete (reconnect=" + reconnect + "), subscribing to " + ENERGY_REQUEST_TOPIC);
+                    subscribeToQueueTopic();
                 }
 
                 @Override
@@ -175,6 +181,66 @@ public class Administrator {
             }
         } catch (MqttException e) {
             System.err.println("AdminServer: Error subscribing to topic '" + POLLUTION_TOPIC + "': " + e.getMessage());
+        }
+    }
+
+    private void subscribeToQueueTopic(){
+        try {
+            if (mqttClient != null && mqttClient.isConnected()) {
+                // Sottoscrizione al topic esistente dell'inquinamento
+                mqttClient.subscribe(POLLUTION_TOPIC, 1);
+                System.out.println("AdminServer: Successfully subscribed to topic '" + POLLUTION_TOPIC + "'");
+
+                // *** NUOVA SOTTOSCRIZIONE ***
+                mqttClient.subscribe(ENERGY_REQUEST_TOPIC, 1, (topic, message) -> {
+                    // Questo è il nuovo gestore per le richieste di energia
+                    String payload = new String(message.getPayload());
+                    System.out.println("AdminServer: Received ENERGY REQUEST on '" + topic + "': " + payload);
+                    try {
+                        JSONObject requestJson = new JSONObject(payload);
+                        String requestId = requestJson.getString("requestId");
+                        double kwh = requestJson.getDouble("kWh");
+
+                        // Chiama il nuovo metodo per accodare la richiesta
+                        enqueueNewRequest(requestId, kwh);
+
+                    } catch (Exception e) {
+                        System.err.println("AdminServer: Failed to parse energy request payload. Error: " + e.getMessage());
+                    }
+                });
+                System.out.println("AdminServer: Successfully subscribed to topic '" + ENERGY_REQUEST_TOPIC + "'");
+
+            }
+        } catch (MqttException e) {
+            // ... gestione errore ...
+        }
+    }
+
+    // --- NUOVO METODO PRIVATO PER ACCODARE RICHIESTE ---
+    private void enqueueNewRequest(String requestId, double kwh) {
+        synchronized (queueLock) {
+            // Potresti controllare se la richiesta è già in coda per evitare duplicati
+            boolean alreadyExists = requestQueue.stream().anyMatch(req -> req.getRequestId().equals(requestId));
+            if (!alreadyExists) {
+                requestQueue.add(new PendingRequest(requestId, kwh));
+                System.out.println("AdminServer: Enqueued request " + requestId + ". Queue size is now: " + requestQueue.size());
+            } else {
+                System.out.println("AdminServer: Ignoring duplicate request " + requestId);
+            }
+        }
+    }
+
+    // --- NUOVO METODO PUBBLICO PER DISTRIBUIRE LAVORO ---
+    // Questo sarà chiamato dal Controller.
+    public PendingRequest getNextWork() {
+        synchronized (queueLock) {
+            if (requestQueue.isEmpty()) {
+                return null; // Niente lavoro da fare
+            }
+            // Rimuove e restituisce il primo elemento della coda
+            PendingRequest work = requestQueue.poll();
+            System.out.println("AdminServer: Assigning work for request " + work.getRequestId() + ". Queue size remaining: " + requestQueue.size());
+            return work;
         }
     }
 

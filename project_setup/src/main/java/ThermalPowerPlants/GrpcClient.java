@@ -5,6 +5,10 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -236,12 +240,13 @@ public class GrpcClient {
      */
     private void simulateNetworkLatency() {
         try {
-            // Simula una latenza tra 500 e 1500 millisecondi (2000 + [0-2000])
-            int latency = 2000 + networkLatencySimulator.nextInt(2001);
+            // Simula una latenza tra 1000 e 2000 millisecondi
+            int latency = 500 + networkLatencySimulator.nextInt(1001);
             System.out.println("DEBUG (gRPC Client): Simulating network latency of " + latency + " ms...");
             Thread.sleep(latency);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
+
 }

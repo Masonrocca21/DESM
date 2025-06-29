@@ -231,81 +231,61 @@ public class RenewableEnergyProvider {
     }
 
     // IL TUO METODO MAIN MODIFICATO MINIMAMENTE
-    public static void main(String[] argv) {
-        String publisherClientId = "RenewableEnergyProvider_" + UUID.randomUUID().toString().substring(0, 8);
-        MemoryPersistence persistence = new MemoryPersistence();
+    public static void main(String[] args) {
+        String publisherId = "renewable-provider-" + UUID.randomUUID().toString().substring(0, 4);
+        MqttClient client = null;
 
         try {
-            // 1. Connessione del client
-            mqttClientInstance = new MqttClient(broker, publisherClientId, persistence);
+            client = new MqttClient(broker, publisherId, new MemoryPersistence());
             MqttConnectOptions connOpts = new MqttConnectOptions();
             connOpts.setCleanSession(true);
-            connOpts.setAutomaticReconnect(true);
+            connOpts.setAutomaticReconnect(true); // Buona pratica
 
-            System.out.println("REP (" + publisherClientId + "): Connessione al broker " + broker);
-            mqttClientInstance.connect(connOpts);
-            System.out.println("REP (" + publisherClientId + "): Connesso.");
+            System.out.println("Provider: Connecting to broker: " + broker);
+            client.connect(connOpts);
+            System.out.println("Provider: Connected.");
 
-            // 2. Thread per generare e pubblicare richieste
-            Thread requestGeneratorThread = new Thread(() -> {
-                while (repRunning) {
-                    try {
-                        // Genera i dati della richiesta
-                        double kwhDemand = (Math.random() * (15000 - 5000 + 1) + 5000);
-                        String requestId = "REQ-" + UUID.randomUUID().toString().substring(0, 8);
-                        RequestDetails request = new RequestDetails(requestId, kwhDemand);
+            Random random = new Random();
 
-                        // Pubblica direttamente
-                        publishRequestInternal(request);
+            while (!Thread.currentThread().isInterrupted()) {
+                // 1. Genera dati
+                double kwh = 5000 + random.nextInt(10001); // Intervallo [5000, 15000]
+                String requestId = "REQ-" + UUID.randomUUID().toString().substring(0, 8);
 
-                        Thread.sleep(GENERATE_NEW_REQUEST_INTERVAL_MS);
+                // 2. Costruisce il payload JSON
+                JSONObject payloadJson = new JSONObject();
+                payloadJson.put("requestId", requestId);
+                payloadJson.put("kWh", kwh);
+                payloadJson.put("timestamp", System.currentTimeMillis());
+                String payload = payloadJson.toString();
 
-                    } catch (InterruptedException e) {
-                        System.out.println("REP: Thread generatore interrotto.");
-                        repRunning = false;
-                        Thread.currentThread().interrupt();
-                    } catch (Exception e) {
-                        System.err.println("REP: Errore nel loop del generatore: " + e.getMessage());
-                        // Aggiungi un piccolo ritardo per evitare di spammare errori in caso di problemi persistenti
-                        try { Thread.sleep(2000); } catch (InterruptedException ie) {}
-                    }
-                }
-            });
+                // 3. Crea e pubblica il messaggio MQTT
+                MqttMessage message = new MqttMessage(payload.getBytes(StandardCharsets.UTF_8));
+                message.setQos(qos);
 
-            // Gestione della chiusura pulita
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                System.out.println("REP: Shutdown in corso...");
-                repRunning = false;
+                // Imposta il flag RETAINED per soddisfare il requisito "remains on the topic".
+                // L'ultima richiesta sarà sempre disponibile per le TPP che si connettono.
+                message.setRetained(false);
+
+                // *** PUBBLICA SUL TOPIC CORRETTO ***
+                client.publish(ENERGY_REQUEST_PUBLISH_TOPIC, message);
+                System.out.println("Provider: Published to '" + ENERGY_REQUEST_PUBLISH_TOPIC + "': " + payload);
+
+                // 5. Attende 10 secondi
+                Thread.sleep(10000);
+            }
+
+        } catch (MqttException | InterruptedException e) {
+            System.err.println("Provider Error: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            if (client != null && client.isConnected()) {
                 try {
-                    // Opzionale: pulisci l'ultimo messaggio "retained" prima di chiudere
-                    MqttMessage clearMessage = new MqttMessage(new byte[0]); // Payload vuoto
-                    clearMessage.setQos(qos);
-                    clearMessage.setRetained(true);
-                    if (mqttClientInstance.isConnected()) {
-                        mqttClientInstance.publish(ENERGY_REQUEST_PUBLISH_TOPIC, clearMessage);
-                        System.out.println("REP: Messaggio 'retained' pulito dal topic.");
-                    }
-
-                    mqttClientInstance.disconnect();
-                    System.out.println("REP: Disconnesso dal broker.");
+                    client.disconnect();
                 } catch (MqttException e) {
-                    System.err.println("REP: Errore durante la disconnessione: " + e.getMessage());
+                    e.printStackTrace();
                 }
-                System.out.println("REP: Shutdown completato.");
-            }));
-
-            requestGeneratorThread.start();
-            System.out.println("REP: Provider avviato. Genera una nuova richiesta ogni " + (GENERATE_NEW_REQUEST_INTERVAL_MS / 1000) + " secondi.");
-            System.out.println("Premi Ctrl+C per uscire.");
-
-            // Mantieni il main thread vivo
-            requestGeneratorThread.join();
-
-        } catch (MqttException me) {
-            System.err.println("Errore MQTT fatale: " + me.getMessage());
-            me.printStackTrace();
-        } catch (InterruptedException e) {
-            System.out.println("Applicazione interrotta.");
+            }
         }
     }
 

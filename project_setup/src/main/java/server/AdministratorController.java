@@ -7,7 +7,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import ThermalPowerPlants.ThermalPowerPlant;
+import ThermalPowerPlants.PendingRequest;
 import ThermalPowerPlants.PeerInfo;
 
 import java.util.List;
@@ -45,6 +45,17 @@ public class AdministratorController {
         }
     }
 
+    @PostMapping("/request-work")
+    public ResponseEntity<PendingRequest> requestWork() {
+        PendingRequest work = administrator.getNextWork();
+        if (work == null) {
+            // 204 No Content è la risposta HTTP corretta per "richiesta ok, ma non c'è nulla da darti"
+            return ResponseEntity.noContent().build();
+        }
+        // 200 OK con il corpo della richiesta
+        return ResponseEntity.ok(work);
+    }
+
     @GetMapping(value = "/getList", produces = "text/plain")
     public ResponseEntity<String> getThermalPlants() {
         if (administrator.getAllRegisteredPlants() == null) {
@@ -74,4 +85,6 @@ public class AdministratorController {
         return ResponseEntity.ok(stats);
 
     }
+
+
 }

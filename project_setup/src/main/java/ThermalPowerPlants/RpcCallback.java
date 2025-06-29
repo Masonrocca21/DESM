@@ -12,4 +12,5 @@ public interface RpcCallback {
      * @param t L'eccezione o l'errore che ha causato il fallimento.
      */
     void onError(Throwable t);
+
 }

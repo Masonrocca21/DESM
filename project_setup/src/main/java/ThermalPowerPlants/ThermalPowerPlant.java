@@ -52,7 +52,7 @@ public class ThermalPowerPlant {
     private final String MQTT_BROKER = "tcp://localhost:1883";
     private final String ADMIN_POLLUTION_TOPIC = "DESM/pollution_stats";
 
-    private enum PlantState { STARTING, IDLE, IN_ELECTION, BUSY }
+    enum PlantState { STARTING, IDLE, IN_ELECTION, BUSY }
     private volatile PlantState currentState;
     private final Object stateLock = new Object();
 
@@ -126,48 +126,30 @@ public class ThermalPowerPlant {
 
     // --- METODI DI CALLBACK (chiamati dal NetManager) ---
     public void onEnergyRequest(String requestId, double kwh) {
-        boolean joining = false;
+        // Questo metodo ora fa solo una cosa: chiama onJoinElection e startElection.
+        // Lo stato verrà cambiato in onJoinElection.
+        onJoinElection(requestId, kwh);
+        netManager.startElection(requestId, kwh, this.id, this.currentOfferPrice);
+    }
+
+    public void onElectionResult(String requestId, double kwh) {
         synchronized (stateLock) {
-            if (currentState == PlantState.IDLE) {
-                currentState = PlantState.IN_ELECTION;
-                joining = true;
+            if (currentState != PlantState.IDLE) {
+                System.out.println("INFO (Plant " + id + "): Already in election, just confirming participation for " + requestId);
+                return;
             }
-        }
-        if (joining) {
+            currentState = PlantState.IN_ELECTION;
             System.out.println("Plant " + id + ": Joining election for request '" + requestId + "'.");
-            this.currentKwhRequest = kwh; // Salva i kWh
+            this.currentKwhRequest = kwh;
             this.currentElectionRequestId = requestId;
             this.currentOfferPrice = generatePrice();
             System.out.println("Plant " + id + ": My offer price is " + String.format("%.2f", currentOfferPrice));
-
-            // Ora diciamo al NetManager di avviare l'elezione con i nostri dati.
-            netManager.startElection(requestId, kwh, this.id, this.currentOfferPrice);
-        }
-    }
-
-    public void onElectionResult(String requestId, int winnerId) {
-        synchronized (stateLock) {
-            if (currentState != PlantState.IN_ELECTION || !requestId.equals(this.currentElectionRequestId)) {
-                return;
-            }
-            if (winnerId == this.id) {
-                System.out.println("Plant " + id + ": I WON election for '" + requestId + "'! Switching to BUSY.");
-                currentState = PlantState.BUSY;
-                simulateEnergyProduction(this.currentKwhRequest);
-            } else {
-                System.out.println("Plant " + id + ": Election for '" + requestId + "' won by Plant " + winnerId + ". Returning to IDLE.");
-                currentState = PlantState.IDLE;
-            }
-            this.currentElectionRequestId = null;
-            this.currentOfferPrice = 0.0;
         }
     }
 
     // --- METODI PRIVATI ---
     private void simulateEnergyProduction(double kwhToProduce) {
-        // --- MODIFICA CHIAVE #2 ---
-        // Calcoliamo la durata della simulazione.
-        // Usiamo Math.round per avere un long.
+
         final long productionTimeMs = Math.round(kwhToProduce * 1.0); // 1 ms per kWh
 
         new Thread(() -> {
@@ -184,6 +166,9 @@ public class ThermalPowerPlant {
                     this.currentState = PlantState.IDLE;
                     this.currentKwhRequest = 0; // Resetta per pulizia
                 }
+                // Notifica il NetManager che una risorsa si è liberata,
+                // così può provare a processare la coda.
+                netManager.onProductionComplete();
             }
         }).start();
     }
@@ -248,8 +233,8 @@ public class ThermalPowerPlant {
         return this.currentState == PlantState.IDLE;
     }
 
-    public String getCurrentStateName() {
-        return this.currentState.name();
+    public PlantState getCurrentState() {
+        return this.currentState;
     }
 
     public void setAsIdle() {
@@ -262,12 +247,19 @@ public class ThermalPowerPlant {
     public void onJoinElection(String requestId, double kwh) {
         synchronized(stateLock) {
             if (currentState == PlantState.IDLE) {
+
                 currentState = PlantState.IN_ELECTION;
                 this.currentElectionRequestId = requestId;
                 this.currentOfferPrice = generatePrice();
                 this.currentKwhRequest = kwh; // Salva i kWh
                 System.out.println("Plant " + id + ": Generated my offer for ongoing election: " + String.format("%.2f", currentOfferPrice));
             }
+        }
+    }
+
+    public boolean isProducing(){
+        synchronized(stateLock) {
+            return this.currentState == PlantState.BUSY;
         }
     }
 

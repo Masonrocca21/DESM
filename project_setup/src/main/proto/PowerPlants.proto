@@ -55,5 +55,5 @@ message ElectedMessage {
 message BatonMessage {
     string request_id = 1;      // L'ID della richiesta di energia
     double kwh = 2;             // L'energia richiesta
-    int32 initiator_id = 3;   // L'ID di chi ha INIZIATO il passaggio (per evitare loop)
+    repeated int32 visited_nodes_ids = 3;   // L'ID di chi ha INIZIATO il passaggio (per evitare loop)
 }
