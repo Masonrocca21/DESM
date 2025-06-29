@@ -241,7 +241,7 @@ public class GrpcClient {
     private void simulateNetworkLatency() {
         try {
             // Simula una latenza tra 1000 e 2000 millisecondi
-            int latency = 500 + networkLatencySimulator.nextInt(1001);
+            int latency = 1500 + networkLatencySimulator.nextInt(1501);
             System.out.println("DEBUG (gRPC Client): Simulating network latency of " + latency + " ms...");
             Thread.sleep(latency);
         } catch (InterruptedException e) {

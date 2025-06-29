@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+// Specifica il package Java dove verranno generate le classi
+option java_package = "Arbiter";
+// Specifica che tutti i servizi e messaggi devono essere in un'unica classe per semplicità
+option java_multiple_files = false;
+option java_outer_classname = "ArbiterProto";
+
+// Il servizio Arbitro che gestisce la coda di lavoro centralizzata
+service ArbiterService {
+    // Aggiunge una richiesta alla coda
+    rpc AddRequest(WorkRequest) returns (Ack);
+
+    // Controlla la prossima richiesta in coda senza rimuoverla
+    rpc PeekNextRequest(Empty) returns (WorkRequest);
+
+    // Tenta di bloccare la coda per finalizzare un'elezione.
+    // È un'operazione atomica: solo il primo che la chiama per un dato requestId avrà successo.
+    rpc LockForFinalization(WorkRequest) returns (LockResponse);
+
+    // Sblocca la coda e rimuove la richiesta completata.
+    rpc UnlockAndRemove(WorkRequest) returns (Ack);
+
+    // Controlla se la coda è aperta per nuove elezioni
+    rpc IsQueueOpen(Empty) returns (QueueStatus);
+
+    // Restituisce la dimensione attuale della coda
+    rpc GetQueueSize(Empty) returns (QueueSize);
+
+    // restituisce la presenza o meno di una richiesta
+    rpc CheckRequestInQueue(WorkRequest) returns (QueueStatus);
+}
+
+// Messaggi usati dal servizio
+
+message WorkRequest {
+    string requestId = 1;
+    double kWh = 2; // Puoi aggiungere altri campi se necessario
+}
+
+message Ack {
+    bool success = 1;
+    string message = 2;
+}
+
+message LockResponse {
+    bool acquired = 1; // true se il lock è stato ottenuto, false altrimenti
+}
+
+message QueueStatus {
+    bool isOpen = 1;
+}
+
+message QueueSize {
+    int32 size = 1;
+}
+
+message Empty {}

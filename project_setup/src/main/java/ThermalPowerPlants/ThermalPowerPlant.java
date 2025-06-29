@@ -61,6 +61,7 @@ public class ThermalPowerPlant {
     private double currentKwhRequest;
 
 
+
     // --- COSTRUTTORE ---
     public ThermalPowerPlant(int id, String grpcAddress, int grpcPort) {
         this.id = id;
@@ -132,13 +133,14 @@ public class ThermalPowerPlant {
         netManager.startElection(requestId, kwh, this.id, this.currentOfferPrice);
     }
 
-    public void onElectionResult(String requestId, double kwh) {
+    public void onElectionResult(String requestId,  double kwh) {
         synchronized (stateLock) {
-            if (currentState != PlantState.IDLE) {
-                System.out.println("INFO (Plant " + id + "): Already in election, just confirming participation for " + requestId);
+            if (currentState == PlantState.IN_ELECTION) {
+                System.out.println("INFO (Plant " + id + "): finished partecipation to  " + requestId + ", becomes IDLE");
+                setAsIdle();
                 return;
             }
-            currentState = PlantState.IN_ELECTION;
+
             System.out.println("Plant " + id + ": Joining election for request '" + requestId + "'.");
             this.currentKwhRequest = kwh;
             this.currentElectionRequestId = requestId;
@@ -147,10 +149,27 @@ public class ThermalPowerPlant {
         }
     }
 
+    public void onWinning(String requestId, double kwh) {
+        synchronized (stateLock) {
+            if (currentState != PlantState.IN_ELECTION) {
+                System.out.println("Warning: problem in winning condition " + requestId);
+                return;
+            }
+        }
+
+        currentState = PlantState.BUSY;
+        System.out.println("Plant " + id + ": producing for request: " + requestId + "'.");
+        this.currentKwhRequest = kwh;
+        this.currentElectionRequestId = requestId;
+
+        simulateEnergyProduction(kwh);
+    }
+
     // --- METODI PRIVATI ---
     private void simulateEnergyProduction(double kwhToProduce) {
 
         final long productionTimeMs = Math.round(kwhToProduce * 1.0); // 1 ms per kWh
+        this.currentState = PlantState.BUSY;
 
         new Thread(() -> {
             try {

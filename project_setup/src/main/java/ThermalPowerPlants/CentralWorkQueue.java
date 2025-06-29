@@ -110,6 +110,22 @@ public class CentralWorkQueue {
     }
 
     /**
+     * Rimuove una nuova richiesta alla coda in modo thread-safe.
+     */
+    public synchronized void deleteRequest(String requestId) {
+        System.out.println("QUEUE: Deleting " + requestId + ".");
+        synchronized (queueLock) {
+            boolean exists = this.requestQueue.stream()
+                    .anyMatch(r -> r.getRequestId().equals(requestId));
+            if (!exists) {
+                System.out.println("QUEUE: Impossible to find " + requestId + ". Already deleted");
+                return;
+            }
+                System.out.println("QUEUE: Removed " + requestId + ". Queue size: " + this.requestQueue.size());
+            }
+    }
+
+    /**
      * Restituisce la prossima richiesta in coda senza rimuoverla (sbircia).
      * @return La prima richiesta, o null se la coda è vuota.
      */
@@ -142,8 +158,6 @@ public class CentralWorkQueue {
         if (currentState == QueueState.AWAITING_RESULT &&
                 requestId.equals(requestBeingFinalized)) {
 
-            // Rimuovo la richiesta dalla coda solo ora!
-            requestQueue.poll();
             currentState = QueueState.OPEN_FOR_ELECTIONS;
             requestBeingFinalized = null;
             System.out.println("QUEUE: Unlocked. Request " + requestId + " is fully completed.");
@@ -165,5 +179,11 @@ public class CentralWorkQueue {
 
     public boolean isQueueOpenForElections() {
         return currentState == QueueState.OPEN_FOR_ELECTIONS;
+    }
+
+    public int QueueSize(){
+        synchronized (queueLock) {
+            return this.requestQueue.size();
+        }
     }
 }
