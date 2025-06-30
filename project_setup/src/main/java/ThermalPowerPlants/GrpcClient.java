@@ -1,6 +1,6 @@
 package ThermalPowerPlants;
 
-import com.example.powerplants.*;
+import powerplants.*;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;

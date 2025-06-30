@@ -4,9 +4,9 @@ import java.util.*;
 
 // Importazioni delle classi generate da Protobuf
 import PlantServiceGRPC.PlantServiceImpl;
-import com.example.powerplants.ElectionMessage;
-import com.example.powerplants.ElectedMessage;
-import com.example.powerplants.PlantInfoMessage;
+import powerplants.ElectionMessage;
+import powerplants.ElectedMessage;
+import powerplants.PlantInfoMessage;
 import Arbiter.ArbiterServiceGrpc;
 import Arbiter.ArbiterProto.WorkRequest;
 import Arbiter.ArbiterProto.Empty;

@@ -1,11 +1,11 @@
 package PlantServiceGRPC;
 
 import io.grpc.stub.StreamObserver;
-import com.example.powerplants.PlantServiceGrpc;
-import com.example.powerplants.ElectionMessage;
-import com.example.powerplants.ElectedMessage;
-import com.example.powerplants.PlantInfoMessage;
-import com.example.powerplants.Ack;
+import powerplants.PlantServiceGrpc;
+import powerplants.ElectionMessage;
+import powerplants.ElectedMessage;
+import powerplants.PlantInfoMessage;
+import powerplants.Ack;
 
 import ThermalPowerPlants.ThermalPowerPlant;
 import ThermalPowerPlants.NetManager;

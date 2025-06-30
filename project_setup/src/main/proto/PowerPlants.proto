@@ -1,6 +1,6 @@
 // powerplant.proto
 syntax = "proto3";
-option java_package = "com.example.powerplants";
+option java_package = "powerplants";
 option java_multiple_files = true;
 
 package PowerPlants;

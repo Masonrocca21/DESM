@@ -1,7 +1,7 @@
 package ThermalPowerPlants;
 
 // Importa la classe generata da Protobuf
-import com.example.powerplants.PlantInfoMessage;
+import powerplants.PlantInfoMessage;
 import java.util.Objects;
 
 
