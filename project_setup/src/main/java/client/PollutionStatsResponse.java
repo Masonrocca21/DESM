@@ -32,8 +32,7 @@ public class PollutionStatsResponse {
         return readingsCount;
     }
 
-    // Setters (opzionali se usi solo il costruttore con parametri per creare l'oggetto,
-    // ma utili se una libreria come Jackson ha bisogno di un costruttore vuoto e poi usa i setter)
+    // Setters
     public void setAverageCo2(double averageCo2) {
         this.averageCo2 = averageCo2;
     }

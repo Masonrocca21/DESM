@@ -3,29 +3,27 @@ package server;
 import java.util.*;
 
 import ThermalPowerPlants.PendingRequest;
-import ThermalPowerPlants.ThermalPowerPlant;
 import ThermalPowerPlants.PeerInfo;
 
 import org.springframework.stereotype.Service;
 
 import org.eclipse.paho.client.mqttv3.*;
-import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence; // Aggiunto
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 
 import javax.annotation.PostConstruct;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.json.JSONException;
+
 
 
 @Service //Spring automatically makes this class a singleton bean
 public class Administrator {
 
-    private final List<PeerInfo> registeredPlantsInfo = new ArrayList<>(); // NUOVO
+    private final List<PeerInfo> registeredPlantsInfo = new ArrayList<>();
 
-    private final Map<Integer, List<AdminPollutionEntry>> pollutionDataByPlantId = new HashMap<>(); // NUOVA
-    private final Object pollutionDataLock = new Object(); // NUOVO Lock per la mappa sopra
-
+    private final Map<Integer, List<AdminPollutionEntry>> pollutionDataByPlantId = new HashMap<>();
+    private final Object pollutionDataLock = new Object();
     private MqttClient mqttClient;
     private final String MQTT_BROKER = "tcp://localhost:1883"; // Configura secondo necessità
     private final String POLLUTION_TOPIC = "DESM/pollution_stats"; // Deve corrispondere a quello usato dalle piante
@@ -33,6 +31,7 @@ public class Administrator {
 
     private final LinkedList<PendingRequest> requestQueue = new LinkedList<>();
     private final Object queueLock = new Object(); // Lock dedicato per la coda
+
     // Struttura per le statistiche di inquinamento
     static class AdminPollutionEntry {
         final long submissionTimestamp;
@@ -47,7 +46,6 @@ public class Administrator {
 
 
     public Administrator() {
-        // L'inizializzazione del listener MQTT avverrà tramite @PostConstruct
     }
 
     // Spring chiamerà questo metodo dopo l'inizializzazione del bean
@@ -59,7 +57,7 @@ public class Administrator {
     private void setupMqttListener() {
         try {
             String clientId = "AdminServer-PollutionMonitor-" + UUID.randomUUID();
-            mqttClient = new MqttClient(MQTT_BROKER, clientId, new MemoryPersistence()); // Aggiunto MemoryPersistence
+            mqttClient = new MqttClient(MQTT_BROKER, clientId, new MemoryPersistence());
             MqttConnectOptions connOpts = new MqttConnectOptions();
             connOpts.setCleanSession(true);
 
@@ -79,11 +77,10 @@ public class Administrator {
                 @Override
                 public void connectionLost(Throwable cause) {
                     System.err.println("AdminServer: MQTT connection lost! Cause: " + (cause != null ? cause.getMessage() : "Unknown"));
-                    // Qui potresti implementare logica di riconnessione se setAutomaticReconnect non è sufficiente o non usato.
                 }
 
                 @Override
-                public void messageArrived(String topic, MqttMessage message) throws Exception {
+                public void messageArrived(String topic, MqttMessage message) {
                     System.out.println("AdminServer: MQTT received message: " + new String(message.getPayload()));
                     String payloadStr = new String(message.getPayload()); // Ottieni la stringa JSON completa
                     System.out.println("AdminServer (Callback): Received MQTT on '" + topic + "': " + payloadStr.substring(0, Math.min(150, payloadStr.length())) + "...");
@@ -99,7 +96,7 @@ public class Administrator {
                             plantId = payloadJson.getInt("plantId");
                         } else {
                             System.err.println("AdminServer: Payload missing 'plantId'");
-                            return; // O gestisci l'errore diversamente
+                            return;
                         }
 
 
@@ -116,11 +113,8 @@ public class Administrator {
 
                             for (int i = 0; i < averagesJsonArray.length(); i++) {
                                 try {
-                                    // JSONArray.getDouble() gestisce correttamente i numeri
                                     averages.add(averagesJsonArray.getDouble(i));
                                 } catch (org.json.JSONException e_num) {
-                                    // Fallback se per qualche motivo fossero stringhe nell'array JSON,
-                                    // anche se il tuo codice client li invia come numeri formattati.
                                     try {
                                         averages.add(Double.parseDouble(averagesJsonArray.getString(i)));
                                     } catch (NumberFormatException e_str) {
@@ -130,11 +124,10 @@ public class Administrator {
                             }
                         } else {
                             System.err.println("AdminServer: Payload missing 'averagesCO2' array.");
-                            // Potrebbe essere un messaggio valido senza medie, gestisci come appropriato
                         }
                         // --------------------------------------------------------------------------
 
-                        if (plantId != -1 && submissionTimestamp != -1L) { // Controlla che i campi chiave siano stati parsati
+                        if (plantId != -1 && submissionTimestamp != -1L) {
                             recordPollutionData(plantId, submissionTimestamp, averages);
                         } else {
                             System.err.println("AdminServer: Critical data (plantId or timestamp) missing after parsing. Payload: " + payloadStr);
@@ -142,10 +135,9 @@ public class Administrator {
 
                         recordPollutionData(plantId, submissionTimestamp, averages); // Questa chiamata è ora thread-safe
 
-                    } catch (org.json.JSONException e_json) { // Cattura specificamente le eccezioni di parsing JSON
+                    } catch (org.json.JSONException e_json) {
                         System.err.println("AdminServer: Error parsing MAIN JSON payload: '" + payloadStr + "' - " + e_json.getMessage());
-                        // e_json.printStackTrace(); // Utile per debug
-                    } catch (Exception e) { // Cattura altre eccezioni impreviste
+                    } catch (Exception e) {
                         System.err.println("AdminServer: Unexpected error processing MQTT message: '" + payloadStr + "'");
                         e.printStackTrace();
                     }
@@ -153,7 +145,6 @@ public class Administrator {
 
                 @Override
                 public void deliveryComplete(IMqttDeliveryToken token) {
-                    // Non rilevante per un subscriber
                 }
             });
             // La sottoscrizione avviene in connectComplete per gestire le riconnessioni
@@ -174,7 +165,7 @@ public class Administrator {
     private void subscribeToPollutionTopic() {
         try {
             if (mqttClient != null && mqttClient.isConnected()) {
-                mqttClient.subscribe(POLLUTION_TOPIC, 1); // QoS 1 o 2 per maggiore affidabilità
+                mqttClient.subscribe(POLLUTION_TOPIC, 1);
                 System.out.println("AdminServer: Successfully subscribed to topic '" + POLLUTION_TOPIC + "'");
             } else {
                 System.err.println("AdminServer: Cannot subscribe to topic '" + POLLUTION_TOPIC + "', MQTT client not connected.");
@@ -193,7 +184,7 @@ public class Administrator {
 
                 // *** NUOVA SOTTOSCRIZIONE ***
                 mqttClient.subscribe(ENERGY_REQUEST_TOPIC, 1, (topic, message) -> {
-                    // Questo è il nuovo gestore per le richieste di energia
+                    // Gestore per le richieste di energia
                     String payload = new String(message.getPayload());
                     System.out.println("AdminServer: Received ENERGY REQUEST on '" + topic + "': " + payload);
                     try {
@@ -212,11 +203,11 @@ public class Administrator {
 
             }
         } catch (MqttException e) {
-            // ... gestione errore ...
+            throw new RuntimeException(e);
         }
     }
 
-    // --- NUOVO METODO PRIVATO PER ACCODARE RICHIESTE ---
+
     private void enqueueNewRequest(String requestId, double kwh) {
         synchronized (queueLock) {
             // Potresti controllare se la richiesta è già in coda per evitare duplicati
@@ -230,8 +221,6 @@ public class Administrator {
         }
     }
 
-    // --- NUOVO METODO PUBBLICO PER DISTRIBUIRE LAVORO ---
-    // Questo sarà chiamato dal Controller.
     public PendingRequest getNextWork() {
         synchronized (queueLock) {
             if (requestQueue.isEmpty()) {
@@ -260,7 +249,6 @@ public class Administrator {
                     " (submitted at " + submissionTimestamp + ")");
     }
 
-    // Modificato per accettare e restituire il DTO
     public List<PeerInfo> addPlant(PeerInfo newPlantInfo) {
         synchronized (this) {
             // Controlla se esiste già una pianta con lo stesso ID
@@ -270,18 +258,12 @@ public class Administrator {
                     return null; // Indica conflitto o pianta già presente
                 }
             }
-            // Ottieni la lista delle piante esistenti PRIMA di aggiungere la nuova, se vuoi restituire solo quelle
-            // List<ThermalPowerPlantInfo> existingPlants = new ArrayList<>(registeredPlantsInfo);
 
             registeredPlantsInfo.add(newPlantInfo);
             // Ordina se la logica di anello della TPP si basa su una lista ordinata ricevuta
             registeredPlantsInfo.sort(Comparator.comparingInt(PeerInfo::getId));
             System.out.println("AdminServer: Added plant info: " + newPlantInfo + ". Total plants: " + registeredPlantsInfo.size());
 
-            // La specifica dice che TPP riceve la lista delle piante *già presenti*.
-            // Se vuoi aderire a questo, restituisci 'existingPlants'.
-            // Se vuoi restituire la lista COMPLETA (inclusa la nuova), che è ciò che il tuo
-            // client si aspetta (ThermalPowerPlantInfo[]), allora restituisci una copia di registeredPlantsInfo.
             return new ArrayList<>(registeredPlantsInfo); // Restituisce la lista completa
         }
     }
@@ -300,7 +282,6 @@ public class Administrator {
         int individualAveragesCount = 0;
         Map<String, Object> responseMap = new HashMap<>();
 
-        // --- MODIFICA QUI ---
         synchronized (pollutionDataLock) { // Usa il lock dedicato
             for (List<AdminPollutionEntry> entriesForOnePlant : pollutionDataByPlantId.values()) {
                 for (AdminPollutionEntry entry : entriesForOnePlant) {

@@ -18,7 +18,7 @@ import java.util.LinkedList;
  */
 public class ArbiterServiceImpl extends ArbiterServiceGrpc.ArbiterServiceImplBase {
 
-    // --- Coda interna e stato (la nostra "CentralWorkQueue" incorporata) ---
+    // --- Coda interna e stato  ---
     private final LinkedList<WorkRequest> requestQueue = new LinkedList<>();
     private final Object lock = new Object(); // Lock per tutte le operazioni
 
@@ -26,7 +26,7 @@ public class ArbiterServiceImpl extends ArbiterServiceGrpc.ArbiterServiceImplBas
     private QueueState currentState = QueueState.OPEN_FOR_ELECTIONS;
     private String requestBeingFinalized = null;
 
-    // --- Implementazione dei metodi gRPC ---
+    // --- Metodi gRPC ---
 
     @Override
     public void addRequest(WorkRequest request, StreamObserver<Ack> responseObserver) {

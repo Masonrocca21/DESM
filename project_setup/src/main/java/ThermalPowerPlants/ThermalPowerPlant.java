@@ -11,12 +11,8 @@ import java.util.TimerTask;
 // Importazioni per il sensore e il buffer
 import Simulators.Buffer;
 import Simulators.PollutionSensor;
-
-// Importazione dell'implementazione del buffer
-// Assumendo che sia in un package 'com.example.powerplants'
 import PollutionManagement.SlidingWindowBuffer;
 
-// Importazione per il client MQTT (esempio con Paho)
 import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
 import org.eclipse.paho.client.mqttv3.MqttException;
@@ -28,18 +24,11 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
  * Gestisce il proprio stato operativo, la logica di business, il sensore di inquinamento
  * e delega le operazioni di rete al NetManager.
  */
-/**
- * La classe ThermalPowerPlant rappresenta l'entità logica di una centrale termica.
- * Gestisce il proprio stato operativo, la logica di business, il sensore di inquinamento
- * e delega le operazioni di rete al NetManager.
- */
 public class ThermalPowerPlant {
 
-    // --- CAMPI (VARIABILI DI ISTANZA) ---
     private final int id;
     private final String grpcAddress;
     private final int grpcPort;
-    private final String adminServerUrl = "http://localhost:8080";;
     private final PeerInfo selfInfo;
 
     private final NetManager netManager;
@@ -61,8 +50,6 @@ public class ThermalPowerPlant {
     private double currentKwhRequest;
 
 
-
-    // --- COSTRUTTORE ---
     public ThermalPowerPlant(int id, String grpcAddress, int grpcPort) {
         this.id = id;
         this.grpcAddress = grpcAddress;
@@ -80,7 +67,6 @@ public class ThermalPowerPlant {
         this.currentState = PlantState.STARTING;
     }
 
-    // --- METODI PUBBLICI PRINCIPALI ---
     public void start() {
         System.out.println("Plant " + id + ": Initializing...");
         try {
@@ -125,10 +111,7 @@ public class ThermalPowerPlant {
         System.out.println("Plant " + id + ": Shutdown complete.");
     }
 
-    // --- METODI DI CALLBACK (chiamati dal NetManager) ---
     public void onEnergyRequest(String requestId, double kwh) {
-        // Questo metodo ora fa solo una cosa: chiama onJoinElection e startElection.
-        // Lo stato verrà cambiato in onJoinElection.
         onJoinElection(requestId, kwh);
         netManager.startElection(requestId, kwh, this.id, this.currentOfferPrice);
     }
@@ -165,7 +148,6 @@ public class ThermalPowerPlant {
         simulateEnergyProduction(kwh);
     }
 
-    // --- METODI PRIVATI ---
     private void simulateEnergyProduction(double kwhToProduce) {
 
         final long productionTimeMs = Math.round(kwhToProduce * 1.0); // 1 ms per kWh
@@ -183,10 +165,9 @@ public class ThermalPowerPlant {
                 synchronized (stateLock) {
                     System.out.println("Plant " + id + ": Production complete. Returning to IDLE state.");
                     this.currentState = PlantState.IDLE;
-                    this.currentKwhRequest = 0; // Resetta per pulizia
+                    this.currentKwhRequest = 0;
                 }
                 // Notifica il NetManager che una risorsa si è liberata,
-                // così può provare a processare la coda.
                 netManager.onProductionComplete();
             }
         }).start();
@@ -285,7 +266,6 @@ public class ThermalPowerPlant {
 
     // --- MAIN ---
     public static void main(String[] args) {
-        // --- 1. Preparazione per l'Input Utente ---
         BufferedReader inputStream = new BufferedReader(new InputStreamReader(System.in));
         int id;
         String address;
@@ -294,7 +274,6 @@ public class ThermalPowerPlant {
 
         System.out.println("--- Configure New Thermal Power Plant ---");
 
-        // --- 2. Richiesta Interattiva dei Parametri ---
         try {
             System.out.print("Enter Plant ID: ");
             id = Integer.parseInt(inputStream.readLine());
@@ -313,7 +292,6 @@ public class ThermalPowerPlant {
             return;
         }
 
-        // --- 3. Creazione e Avvio dell'Istanza della Centrale ---
         System.out.println("\n--- Starting Thermal Power Plant Instance ---");
         System.out.println("  ID: " + id);
         System.out.println("  gRPC Address: " + address + ":" + port);
@@ -322,7 +300,6 @@ public class ThermalPowerPlant {
         try {
             ThermalPowerPlant plant = new ThermalPowerPlant(id, address, port);
 
-            // Aggiunge uno "shutdown hook" per una chiusura pulita con Ctrl+C.
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 System.out.println("\nShutdown signal received. Cleaning up resources for Plant " + id + "...");
                 plant.shutdown();
@@ -332,9 +309,6 @@ public class ThermalPowerPlant {
             // Avvia la logica principale della centrale.
             plant.start();
 
-            // Mantiene il thread principale vivo per impedire alla JVM di terminare.
-            // Il server gRPC in background manterrà comunque l'applicazione attiva,
-            // ma questo è un modo esplicito per attendere indefinitamente.
             System.out.println("\nPlant " + id + " is running. Press Ctrl+C to exit.");
             Thread.currentThread().join();
 

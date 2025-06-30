@@ -10,7 +10,7 @@ public class ArbiterServer {
         // Definiamo la porta su cui il nostro servizio Arbitro sarà in ascolto.
         final int PORT = 9090;
 
-        // Creiamo il server gRPC, legandolo alla nostra implementazione del servizio.
+        // Creiamo il server gRPC.
         Server server = ServerBuilder.forPort(PORT)
                 .addService(new ArbiterServiceImpl())
                 .build();
@@ -21,7 +21,7 @@ public class ArbiterServer {
             System.out.println("Arbiter Server started, listening on port " + PORT);
 
             // Aggiungiamo un hook di shutdown per chiudere il server in modo pulito
-            // quando il processo Java viene terminato (es. con Ctrl+C).
+            // quando il processo Java viene terminato
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 System.out.println("Shutting down Arbiter Server...");
                 server.shutdown();

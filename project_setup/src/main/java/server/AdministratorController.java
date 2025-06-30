@@ -20,8 +20,6 @@ public class AdministratorController {
 
     private final Administrator administrator;
 
-    ObjectMapper mapper = new ObjectMapper();
-
     public AdministratorController(Administrator administrator) {
 
         this.administrator = administrator;
@@ -66,8 +64,7 @@ public class AdministratorController {
     }
 
     @GetMapping(value = "/getPollution/{t1_ms}/{t2_ms}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Map<String, Object>> getPollutionStatistics( // CAMBIA TIPO DI RITORNO
-                                                                       @PathVariable("t1_ms") long timeA_milliseconds,
+    public ResponseEntity<Map<String, Object>> getPollutionStatistics( @PathVariable("t1_ms") long timeA_milliseconds,
                                                                        @PathVariable("t2_ms") long timeB_milliseconds) {
 
         System.out.println("AdminController: Received request for pollution stats between " +
@@ -76,7 +73,7 @@ public class AdministratorController {
         if (timeB_milliseconds < timeA_milliseconds) {
             Map<String, Object> errorResponse = new HashMap<>();
             errorResponse.put("error", "End timestamp cannot be before start timestamp");
-            errorResponse.put("averageCo2", -1.0); // o valore indicativo di errore
+            errorResponse.put("averageCo2", -1.0); // errore
             errorResponse.put("readingsCount", -1);
             return ResponseEntity.badRequest().body(errorResponse);
         }

@@ -3,20 +3,12 @@ package ThermalPowerPlants;
 import com.example.powerplants.*;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.client.RestTemplate;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
-
-// Importa le tue classi generate da Protobuf
-
 
 /**
  * GrpcClient gestisce la comunicazione in uscita verso altre centrali termiche.
@@ -43,7 +35,7 @@ public class GrpcClient {
             // Controlla se il canale esiste già nella nostra cache.
             if (channels.containsKey(cacheKey)) {
                 ManagedChannel existingChannel = channels.get(cacheKey);
-                // Aggiungiamo un controllo per sicurezza: se il canale è stato spento, lo ricreiamo.
+                // Se il canale è stato spento, lo ricreiamo.
                 if (!existingChannel.isShutdown() && !existingChannel.isTerminated()) {
                     return existingChannel;
                 }
@@ -52,11 +44,9 @@ public class GrpcClient {
             // Se il canale non esiste o è stato chiuso, ne creiamo uno nuovo.
             System.out.println("LOG (gRPC Client): Creating new channel for target " + cacheKey);
 
-            // --- MODIFICA CHIAVE ---
-            // Usiamo il metodo forAddress(host, port) che è più diretto e meno ambiguo.
             ManagedChannel newChannel = ManagedChannelBuilder
                     .forAddress(targetInfo.getAddress(), targetInfo.getPort())
-                    .usePlaintext() // Per connessioni non sicure in sviluppo
+                    .usePlaintext()
                     .build();
 
             channels.put(cacheKey, newChannel);
@@ -64,7 +54,6 @@ public class GrpcClient {
         }
     }
 
-    // --- METODI PER LE CHIAMATE RPC ASINCRONE (NON BLOCCANTI) ---
 
     /**
      * Invia un annuncio di presenza a un altro peer.
@@ -88,14 +77,12 @@ public class GrpcClient {
                 }
                 @Override
                 public void onError(Throwable t) {
-                    // L'errore che vedi viene già da qui, quindi questo log è già presente
                     System.err.println("RPC 'announcePresence' failed for target " + target.getId() + ": " + t.getMessage());
                 }
                 @Override
                 public void onCompleted() {}
             });
         } catch (Exception e) {
-            // Log per errori nella creazione del canale, anche se improbabile
             System.err.println("FATAL (gRPC Client of " + message.getId() + "): Could not even get a channel for target " + target.getId() + ". Error: " + e.getMessage());
         }
     }
@@ -118,7 +105,6 @@ public class GrpcClient {
             public void onNext(Ack value) {}
             @Override
             public void onError(Throwable t) {
-                // Errore: notifichiamo il chiamante.
                 callback.onError(t);
                 System.err.println("RPC 'sendElection' failed for target " + target.getId() + ": " + t.getMessage());
             }
@@ -183,64 +169,11 @@ public class GrpcClient {
     }
 
     /**
-     * Invia un messaggio "Baton" a un altro peer per passargli la responsabilità
-     * di avviare un'elezione. La chiamata è asincrona.
-     *
-     * @param target Il peer a cui passare il testimone (il nostro successore).
-     * @param message Il messaggio BatonMessage contenente i dettagli della richiesta.
-     */
-    public void passElectionBaton(PeerInfo target, BatonMessage message) {
-        // Se per qualche motivo il target è nullo, esci per evitare errori.
-        if (target == null) {
-            System.err.println("ERROR (gRPC Client): Attempted to pass baton to a null target.");
-            return;
-        }
-
-        // Log per tracciare l'azione
-        System.out.println("LOG (gRPC Client): Passing election baton for request '"
-                + message.getRequestId() + "' to target " + target.getId());
-
-        try {
-            // Ottiene il canale (riutilizzandolo se esiste)
-            ManagedChannel channel = getChannel(target);
-
-            // Crea uno stub asincrono
-            PlantServiceGrpc.PlantServiceStub asyncStub = PlantServiceGrpc.newStub(channel);
-
-            // Esegue la chiamata RPC asincrona
-            asyncStub.passElectionBaton(message, new StreamObserver<Ack>() {
-                @Override
-                public void onNext(Ack value) {
-                    // L'ACK è stato ricevuto, la chiamata è andata a buon fine a livello di rete.
-                    // Non è necessario loggare qui per non intasare la console.
-                }
-
-                @Override
-                public void onError(Throwable t) {
-                    // Logga l'errore se la chiamata fallisce.
-                    // Qui si potrebbe implementare la logica di retry che abbiamo discusso.
-                    System.err.println("RPC 'passElectionBaton' failed for target " + target.getId() + ": " + t.getMessage());
-                }
-
-                @Override
-                public void onCompleted() {
-                    // La chiamata è conclusa.
-                }
-            });
-
-        } catch (Exception e) {
-            // Cattura eccezioni impreviste durante la creazione del canale o dello stub.
-            System.err.println("FATAL (gRPC Client): Unexpected error while trying to pass election baton to " + target.getId() + ". Error: " + e.getMessage());
-        }
-    }
-
-    /**
-     * (NUOVO METODO HELPER)
      * Simula la latenza di rete attendendo per un tempo casuale.
      */
     private void simulateNetworkLatency() {
         try {
-            // Simula una latenza tra 1000 e 2000 millisecondi
+            // Simula una latenza tra 1500 e 3000 millisecondi
             int latency = 1500 + networkLatencySimulator.nextInt(1501);
             System.out.println("DEBUG (gRPC Client): Simulating network latency of " + latency + " ms...");
             Thread.sleep(latency);

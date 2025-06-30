@@ -10,17 +10,14 @@ public class MQTT_Controller {
     private static MqttClient client;
     private static String broker;
     private static String subTopic;
-    private static String pubTopic;
-
     private static int subQos = 2;
-    private static int pubQos = 2;
+
 
 
     public static void main(String[] args) {
         broker = "tcp://localhost:1883";
         clientId = MqttClient.generateClientId();
         subTopic = "home/renewableEnergyProvider/power";
-        pubTopic = "home/renewableEnergyProvider/power";
 
         try {
             client = new MqttClient(broker, clientId);
@@ -33,7 +30,7 @@ public class MQTT_Controller {
 
             client.setCallback(new MqttCallback() {
 
-                public void messageArrived(String topic, MqttMessage message) throws Exception {
+                public void messageArrived(String topic, MqttMessage message) {
                     String time = new Timestamp(System.currentTimeMillis()).toString();
                     String receivedMessage = new String(message.getPayload());
                     System.out.println(clientId + " Received a Message! - Callback - Thread PID: " + Thread.currentThread().getId() +

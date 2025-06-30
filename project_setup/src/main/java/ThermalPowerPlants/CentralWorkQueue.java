@@ -4,8 +4,6 @@ import org.eclipse.paho.client.mqttv3.*;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.json.JSONObject;
 
-import org.eclipse.paho.client.mqttv3.*;
-import org.json.JSONObject;
 import java.util.LinkedList;
 import java.util.UUID;
 

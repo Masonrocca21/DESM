@@ -3,17 +3,16 @@ package ThermalPowerPlants;
 import java.util.*;
 
 // Importazioni delle classi generate da Protobuf
-import Arbiter.ArbiterProto;
 import PlantServiceGRPC.PlantServiceImpl;
-import com.example.powerplants.BatonMessage;
 import com.example.powerplants.ElectionMessage;
 import com.example.powerplants.ElectedMessage;
 import com.example.powerplants.PlantInfoMessage;
-
 import Arbiter.ArbiterServiceGrpc;
 import Arbiter.ArbiterProto.WorkRequest;
 import Arbiter.ArbiterProto.Empty;
 import Arbiter.ArbiterProto.QueueStatus;
+
+
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
@@ -31,8 +30,6 @@ import io.grpc.ServerBuilder;
 
 // Importazioni necessarie da aggiungere in cima alla classe NetManager
 import org.eclipse.paho.client.mqttv3.*;
-import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
-import org.json.JSONObject; // Per parsare il payload della richiesta di energia
 
 /**
  * NetManager gestisce tutta la logica di rete e la sincronizzazione per una ThermalPowerPlant.
@@ -47,56 +44,30 @@ public class NetManager {
 
     private final Object peerStateLock;
     private final Object electionStateLock;
-    private final Object ringChangeLock;
 
-    // @GuardedBy("peerStateLock")
     private final Map<Integer, PeerInfo> networkPeers;
-    // @GuardedBy("peerStateLock")
     private PeerInfo nextInRing;
 
-    // @GuardedBy("electionStateLock")
+
     private boolean isElectionRunning = false;
-    private boolean isThisNodeAParticipant = false;
     private String currentElectionId = null;
 
     private final String adminServerUrl = "http://localhost:8080";
-
-    // @GuardedBy("ringChangeLock")
-    private volatile boolean isHandoverPending = false;
-    private PeerInfo pendingNextNode = null;
-
-    // Campo per mantenere un riferimento al server gRPC, per poterlo chiudere
     private Server grpcServer;
-
     private MqttClient energyRequestMqttClient;
     private final String MQTT_BROKER = "tcp://localhost:1883";
-    private final String ENERGY_REQUEST_TOPIC = "home/renewableEnergyProvider/power/new"; // O il topic corretto
+    private final String ENERGY_REQUEST_TOPIC = "home/renewableEnergyProvider/power/new";
 
-    // Questo oggetto servirà sia come lock sia per la comunicazione wait/notify.
+    // Lock per la comunicazione.
     private final Object grpcServerStartupLock = new Object();
     // Una flag volatile per comunicare lo stato del server tra i thread.
     private volatile boolean isGrpcServerReady = false;
 
-    // La coda vera e propria che conterrà le richieste non processate.
-    // Dichiarata come LinkedList per essere espliciti sul non usare j.u.c.
-    // L'accesso deve essere SEMPRE protetto da un blocco synchronized.
-    private final LinkedList<PendingRequest> requestQueue = new LinkedList<>();
-
-    // Un lock dedicato per proteggere l'accesso concorrente alla coda.
-    private final Object queueLock = new Object();
-
-    private final Object queueProcessorLock = new Object();
-    private volatile boolean isProcessorRunning = false;
-    private Thread queueProcessorThread;
     private Thread watchdogThread;
-    private volatile boolean isRunning = true; // Per fermare il thread gentilmente
-    private static final long WATCHDOG_INTERVAL_MS = 15000; // 15 secondi, un intervallo lungo e sicuro
+    private volatile boolean isRunning = true; // Per fermare il thread
+    private static final long WATCHDOG_INTERVAL_MS = 15000; // 15 secondi
 
     private final Map<String, ElectionInfo> activeElections = new HashMap<>();
-    private final Object electionsLock = new Object(); // Lock per la mappa
-    private boolean isSearchingForStarter = false;
-
-    private final CentralWorkQueue workQueue;
     private final ManagedChannel arbiterChannel;
     private final ArbiterServiceGrpc.ArbiterServiceBlockingStub arbiterClient;
 
@@ -104,7 +75,6 @@ public class NetManager {
     private static class ElectionInfo {
         final String requestId;
         boolean isParticipant; // Sono un partecipante attivo o solo un passante?
-        // Aggiungi altri campi se necessario, es. il mio miglior prezzo per questa elezione
 
         ElectionInfo(String requestId) {
             this.requestId = requestId;
@@ -113,37 +83,31 @@ public class NetManager {
     }
 
 
-
-    // --- COSTRUTTORE ---
     public NetManager(ThermalPowerPlant plant) {
         this.plant = plant;
         this.grpcClient = new GrpcClient();
+
         // Inizializza i lock per la gestione della concorrenza
         this.peerStateLock = new Object();
         this.electionStateLock = new Object();
-        this.ringChangeLock = new Object();
 
         // Inizializza le strutture dati
         this.networkPeers = new HashMap<>();
 
+        // Inizializza timer
         this.watchdogThread = new Thread(this::watchdogLoop);
         this.watchdogThread.setName("WatchdogTimer-" + plant.getId());
         this.watchdogThread.setDaemon(true); // Si chiude con l'applicazione
 
-
-        this.workQueue = CentralWorkQueue.getInstance();
-
-        // --- Inizializza la connessione con l'Arbitro ---
-        String arbiterAddress = "localhost:9090"; // Assicurati che la porta sia corretta
+        // Inizializza la connessione con l'Arbitro
+        String arbiterAddress = "localhost:9090";
         this.arbiterChannel = ManagedChannelBuilder.forTarget(arbiterAddress)
-                .usePlaintext() // Per test locali, altrimenti usa TLS
+                .usePlaintext()
                 .build();
         this.arbiterClient = ArbiterServiceGrpc.newBlockingStub(arbiterChannel);
-
         System.out.println("NetManager for Plant " + plant.getId() + ": Connected to Arbiter at " + arbiterAddress);
     }
 
-    // --- METODI PUBBLICI PRINCIPALI ---
 
     /**
      * Avvia la logica di rete. Il primo passo è registrarsi con l'Administrator Server
@@ -160,7 +124,6 @@ public class NetManager {
             while (!isGrpcServerReady) {
                 try {
                     System.out.println("Plant " + plant.getId() + ": Waiting for gRPC server to be ready...");
-                    // Rilascia il lock e attende che un altro thread chiami notify() su questo oggetto.
                     grpcServerStartupLock.wait();
                 } catch (InterruptedException e) {
                     System.err.println("Plant " + plant.getId() + ": Startup wait was interrupted.");
@@ -178,8 +141,7 @@ public class NetManager {
             return;
         }
 
-        // 2. ANNUNCIO ATTIVO
-        // Estrae la lista dei peer a cui annunciarsi (tutti tranne me stesso).
+        // 3.  Estrae la lista dei peer a cui annunciarsi (tutti tranne me stesso).
         List<PeerInfo> peersToNotify = new ArrayList<>();
         for (PeerInfo peer : allPeersAfterMyRegistration) {
             if (peer.getId() != plant.getId()) {
@@ -192,22 +154,19 @@ public class NetManager {
             broadcastMyPresence(peersToNotify);
         }
 
-        // 3. AGGIORNAMENTO DELLA PROPRIA CONOSCENZA
-        // Dopo aver notificato gli altri, imposto la mia visione della rete.
+        // 4. Dopo aver notificato gli altri, imposto la mia visione della rete.
         synchronized (peerStateLock) {
             networkPeers.clear();
             for (PeerInfo peer : allPeersAfterMyRegistration) {
                 networkPeers.put(peer.getId(), peer);
             }
 
-            // Riattiviamo il listener MQTT su ogni centrale!
             startMqttListenerForEnergyRequests();
 
+            // Il mio successore
             recalculateRingUnsafe();
 
             plant.setAsIdle();
-
-            // All'avvio, la centrale è IDLE, quindi prova subito a vedere se c'è lavoro
             System.out.println("Plant " + plant.getId() + ": Startup complete. Making initial check for work.");
 
             // Avvia il thread guardiano in background
@@ -248,7 +207,6 @@ public class NetManager {
 
                     System.out.println("LOG (Plant " + plant.getId() + "): Queue is OPEN. Starting election for " + currentElectionId);
                     plant.onEnergyRequest(workToDo.getRequestId(), workToDo.getKWh());
-                    // La logica di invio del primo ElectionMessage è in plant.onEnergyRequest -> netManager.startElection
                 }
             } else {
                 if (workToDo != null) {
@@ -297,13 +255,11 @@ public class NetManager {
                 return null;
             }
         } catch (Exception e) {
-            // Gestisce errori di connessione o altri problemi del client HTTP.
             System.err.println("Plant " + plant.getId() + ": Could not connect to Admin Server at " + registrationUrl + ". Error: " + e.getMessage());
             return null;
         }
     }
 
-    // --- GESTORI DI EVENTI GRPC IN INGRESSO ---
 
     /**
      * Avvia un'elezione inviando il primo messaggio di elezione nell'anello.
@@ -320,7 +276,6 @@ public class NetManager {
                 System.err.println("Plant " + myId + ": Tried to start an election but state is inconsistent.");
                 return;
             }
-            this.isThisNodeAParticipant = true;
         }
 
         System.out.println("Plant " + myId + ": Starting election by sending the first message to " + this.nextInRing.getId() + ".");
@@ -332,22 +287,14 @@ public class NetManager {
                 .setCandidateValue(myPrice)
                 .build();
 
-        // Chiamata "lancia e dimentica". Non attendiamo la risposta.
         grpcClient.sendElection(this.nextInRing, firstMessage, new RpcCallback() {
             @Override
             public void onCompleted() {
-                // Possiamo loggare il successo se vogliamo, ma non è necessario.
-                // System.out.println("DEBUG: Initial election message sent successfully to " + nextInRing.getId());
             }
 
             @Override
             public void onError(Throwable t) {
-                // Qui dovremmo gestire il fallimento. Per esempio, se il successore è morto,
-                // potremmo tentare di inviare al successore del successore, o resettare l'elezione.
                 System.err.println("FATAL: Failed to send initial election message to " + nextInRing.getId() + ". Error: " + t.getMessage());
-                // Una gestione di errore robusta potrebbe resettare lo stato qui.
-                // resetElectionState();
-                // triggerProcessing(); // E provare a far ripartire la catena.
             }
         });
     }
@@ -355,9 +302,6 @@ public class NetManager {
     /**
      * Gestisce la richiesta di un nuovo nodo di unirsi alla rete.
      * Questo metodo agisce da coordinatore temporaneo per l'inserimento:
-     * 1. Identifica il predecessore (P) e il successore (A) del nuovo nodo.
-     * 2. Notifica a tutti i nodi l'esistenza del nuovo peer.
-     * 3. Avvia il processo di handover controllato ordinando a (P) di iniziare.
      *
      * @param newPlantProtobuf Il messaggio gRPC con le info del nuovo nodo.
      */
@@ -383,7 +327,7 @@ public class NetManager {
     public void handleElectionMessage(ElectionMessage message) {
         String requestId = message.getCurrentElectionRequestId();
 
-        // CONTROLLO CON L'ARBITRO (Questo rimane, è fondamentale)
+        // CONTROLLO CON L'ARBITRO
         if (!isRequestInQueue(requestId)) {
             System.out.println("LOG (Plant " + plant.getId() + "): Ignoring ZOMBIE election message for " +
                     "completed request '" + requestId + "'.");
@@ -414,7 +358,6 @@ public class NetManager {
                 election.isParticipant = true;
 
                 // Chiamiamo onJoinElection solo se non siamo già "IN_ELECTION" per un'altra istanza.
-                // Questo evita di ricalcolare il prezzo.
                 if (plant.getCurrentState() == ThermalPowerPlant.PlantState.IDLE) {
                     plant.onJoinElection(requestId, message.getRequiredKwh());
                 }
@@ -451,11 +394,10 @@ public class NetManager {
             }
 
             if (message.getCandidateId() == myId && !iAmTheNewCandidate) {
-                // --- MODIFICA FONDAMENTALE: GESTIONE DELLA VITTORIA ---
+                // --- GESTIONE DELLA VITTORIA ---
 
                 // HO VINTO! Il messaggio ha fatto il giro e sono ancora il migliore.
                 System.out.println("LOG (Plant " + myId + ", Winner): I have won the election for " + requestId + "!");
-                //Cancello la richiesta dalla coda
 
                 // Tenta di acquisire il lock dall'Arbitro
                 WorkRequest lockRequest = WorkRequest.newBuilder().setRequestId(requestId).build();
@@ -472,7 +414,7 @@ public class NetManager {
                             .setRequiredKwh(message.getRequiredKwh())
                             .build();
 
-                    // 3. AVVIO L'ANELLO DEL RISULTATO: invio il token solo al mio successore.
+                    // 3. AVVIO ELECTED: invio il token solo al mio successore.
                     new Thread(() -> {
                         grpcClient.sendElected(currentNextInRing, resultMessage, new RpcCallback() {
                             @Override public void onCompleted() {
@@ -490,7 +432,6 @@ public class NetManager {
 
                 } else {
                     // Questo significa che un'altra elezione concorrente ha già vinto e confermato.
-                    // La mia vittoria è "obsoleta". Resetto e basta.
                     System.out.println("WARN (Plant " + myId + "): My win was for an already-confirmed request. Resetting state.");
                     resetElectionStateFor(requestId);
                 }
@@ -530,7 +471,6 @@ public class NetManager {
 
         // --- 1. Controllo se sono il destinatario finale del token ---
         // Se sono il vincitore, significa che il token ha completato il suo giro.
-        // Il mio unico compito è "consumarlo" e fermare la catena.
         if (myId == winnerId) {
             System.out.println("LOG (Plant " + myId + ", Winner): Result token has completed the ring. Notifying Arbiter to unlock and remove.");
 
@@ -582,11 +522,10 @@ public class NetManager {
     private void checkAndStartNextWork() {
         new Thread(() -> {
             // Chiedo all'arbitro qual è il prossimo lavoro in coda.
-            System.out.println("LOG (Plant " + plant.getId() + "): taking next work. Queue Size = " + workQueue.QueueSize() + ", and first request is: " + workQueue.peekNextRequest());
             WorkRequest nextWork = peekNextRequest();
 
             if (nextWork != null) {
-                // C'è del lavoro! Passo i dettagli al metodo che tenta di avviarlo.
+                // C'è del lavoro!
                 System.out.println("LOG (Plant " + plant.getId() + "): Found pending work in queue: " + nextWork.getRequestId());
                 tryToStartWork();
             } else {
@@ -597,8 +536,6 @@ public class NetManager {
     }
 
 
-
-    // --- GESTORE DI EVENTI MQTT ---
     /**
      * Gestore per i messaggi MQTT ricevuti sul topic delle richieste di energia.
      * Questo metodo agisce come un "trigger" o una "sveglia".
@@ -630,93 +567,9 @@ public class NetManager {
         }
     }
 
-
-    /**
-     * (Gestore gRPC) Chiamato quando si riceve il testimone dal predecessore.
-     */
-    public void handlePassBaton(BatonMessage request) {
-        System.out.println("LOG (Plant " + plant.getId() + "): Received election baton for request " + request.getRequestId());
-        handleBaton(request);
-    }
-
-    /**
-     * Riceve il testimone e decide se avviare l'elezione (se IDLE)
-     * o passare il testimone al prossimo candidato valido (se BUSY).
-     */
-    public void handleBaton(BatonMessage request) {
-        synchronized(electionStateLock) {
-            // Controllo di sicurezza: se non siamo in un circuito di ricerca,
-            // o se il testimone è per una richiesta diversa, è un messaggio obsoleto.
-            if (!isSearchingForStarter || !request.getRequestId().equals(currentElectionId)) {
-                System.out.println("WARN (Plant " + plant.getId() + "): Ignoring obsolete or unexpected BatonMessage for " + request.getRequestId());
-                return;
-            }
-
-            if (plant.isIdle()) {
-                // SONO IDLE, DIVENTO LO STARTER.
-                isSearchingForStarter = false; // Spengo il circuito di ricerca
-                isElectionRunning = true;
-                currentElectionId = request.getRequestId();
-
-                synchronized(queueLock) {
-                    requestQueue.removeIf(req -> req.getRequestId().equals(request.getRequestId()));
-                }
-
-                System.out.println("LOG (Plant " + plant.getId() + "): I am IDLE. Accepting baton, will start election for " + request.getRequestId() + " in a new context.");
-
-                // --- MODIFICA CRUCIALE ---
-                // Avviamo l'elezione in un nuovo thread per disaccoppiarla dal contesto
-                // della chiamata gRPC "passElectionBaton" che ha attivato questo metodo.
-                new Thread(() -> {
-                    plant.onEnergyRequest(request.getRequestId(), request.getKwh());
-                }).start();
-
-            } else {
-                // SONO BUSY, PASSO IL TESTIMONE.
-                System.out.println("LOG (Plant " + plant.getId() + "): I am BUSY, passing baton for " + request.getRequestId());
-
-                List<Integer> visitedIds = new ArrayList<>(request.getVisitedNodesIdsList());
-                visitedIds.add(plant.getId());
-
-                PeerInfo nextCandidate = findNextCandidate(visitedIds);
-
-                if (nextCandidate != null) {
-                    BatonMessage nextBaton = request.toBuilder()
-                            .clearVisitedNodesIds()
-                            .addAllVisitedNodesIds(visitedIds)
-                            .build();
-                    grpcClient.passElectionBaton(nextCandidate, nextBaton);
-                } else {
-                    System.out.println("WARN (Plant " + plant.getId() + "): Baton tour for " + request.getRequestId() + " completed but no IDLE node was found.");
-                    // In questo caso la richiesta rimane in coda. Il prossimo coordinatore riproverà.
-                }
-            }
-        }
-    }
-
-    // Metodo helper per la logica di ricerca
-    private PeerInfo findNextCandidate(List<Integer> visitedIds) {
-        PeerInfo nextCandidate = null;
-        synchronized(peerStateLock) {
-            int lowestIdFound = Integer.MAX_VALUE;
-            for(PeerInfo peer : networkPeers.values()) {
-                if (peer.getId() < lowestIdFound && !visitedIds.contains(peer.getId())) {
-                    lowestIdFound = peer.getId();
-                    nextCandidate = peer;
-                }
-            }
-        }
-        return nextCandidate;
-    }
-
-
-    // --- METODI PRIVATI ---
-
-
     /**
      * (Privato, Unsafe) Ricalcola e imposta il puntatore `nextInRing` per questa centrale.
      * Si basa su una lista di peer ordinata per ID per garantire la determinazione.
-     * DEVE essere chiamato all'interno di un blocco `synchronized(peerStateLock)`.
      */
     private void recalculateRingUnsafe() {
         // Se non ci sono peer, non c'è anello.
@@ -744,12 +597,10 @@ public class NetManager {
         }
 
         // 3. Calcola l'indice del mio successore.
-        // L'operatore modulo (%) gestisce il "wrap-around" per l'ultimo nodo.
         if (myIndex != -1) {
             int nextIndex = (myIndex + 1) % sortedPeers.size();
             this.nextInRing = sortedPeers.get(nextIndex);
         } else {
-            // Questo non dovrebbe accadere se la centrale è nella sua stessa mappa.
             this.nextInRing = null;
         }
     }
@@ -759,10 +610,6 @@ public class NetManager {
      * (Privato, Unsafe) Restituisce una lista di tutti i PeerInfo conosciuti,
      * ordinata in modo crescente per ID.
      *
-     * "Unsafe" significa che questo metodo DEVE essere chiamato solo da un
-     * blocco di codice che già detiene il `peerStateLock` per evitare
-     * race condition sulla mappa `networkPeers`.
-     *
      * @return Una nuova lista ordinata di PeerInfo.
      */
     private List<PeerInfo> getSortedPeersUnsafe() {
@@ -770,7 +617,6 @@ public class NetManager {
         List<PeerInfo> sortedPeers = new ArrayList<>(networkPeers.values());
 
         // Ordina la lista usando l'ID come chiave.
-        // Usare Comparator.comparingInt è un modo moderno ed efficiente per farlo.
         sortedPeers.sort(Comparator.comparingInt(PeerInfo::getId));
 
         return sortedPeers;
@@ -796,7 +642,6 @@ public class NetManager {
                 // Log di successo AVVENUTO
                 System.out.println("LOG (Plant " + plant.getId() + ", startGrpcServer): Server start() method completed successfully. Now awaiting termination.");
 
-                // --- PUNTO CHIAVE DELLA NOTIFICA ---
                 // Il server è partito con successo. Ora notifichiamo il thread principale.
                 synchronized (grpcServerStartupLock) {
                     isGrpcServerReady = true;
@@ -833,7 +678,7 @@ public class NetManager {
 
             MqttConnectOptions connOpts = new MqttConnectOptions();
             connOpts.setCleanSession(true);
-            connOpts.setAutomaticReconnect(true); // Utile per la robustezza
+            connOpts.setAutomaticReconnect(true);
 
             energyRequestMqttClient.setCallback(new MqttCallback() {
                 @Override
@@ -873,7 +718,7 @@ public class NetManager {
             energyRequestMqttClient.connect(connOpts);
 
             // Sottoscrivi al topic
-            energyRequestMqttClient.subscribe(ENERGY_REQUEST_TOPIC, 1); // QoS 1
+            energyRequestMqttClient.subscribe(ENERGY_REQUEST_TOPIC, 1);
             System.out.println("Plant " + plant.getId() + ": Subscribed to energy request topic '" + ENERGY_REQUEST_TOPIC + "'");
 
         } catch (MqttException e) {
@@ -882,63 +727,11 @@ public class NetManager {
         }
     }
 
-    /**
-     * Restituisce una copia della lista di tutti i peer attualmente conosciuti nella rete.
-     * La copia previene modifiche accidentali alla mappa interna.
-     * Questo metodo è thread-safe.
-     *
-     * @return Una nuova List<PeerInfo> contenente tutti i peer.
-     */
-    public List<PeerInfo> getAllPeers() {
-        synchronized (peerStateLock) {
-            // Restituiamo una NUOVA ArrayList, non un riferimento alla mappa interna.
-            return new ArrayList<>(networkPeers.values());
-        }
-    }
-
-    /**
-     * Restituisce il numero di peer attualmente conosciuti nella rete.
-     * @return Il numero di peer.
-     */
-    public int getNetworkSize() {
-        synchronized (peerStateLock) {
-            return networkPeers.size();
-        }
-    }
-
-    /**
-     * Restituisce le informazioni del peer successore nell'anello.
-     * @return Il PeerInfo del prossimo nodo, o null se non esiste.
-     */
-    public PeerInfo getNextPeerInRing() {
-        synchronized (peerStateLock) {
-            return this.nextInRing;
-        }
-    }
 
     // CHIAMATO DALLA TPP QUANDO TORNA IDLE
     public void onProductionComplete() {
         plant.setAsIdle();
         System.out.println("LOG (Plant " + plant.getId() + "): TPP became IDLE.");
-    }
-
-    /**
-     * (Privato) Resetta solo lo stato relativo alla ricerca di uno starter.
-     * Viene chiamato quando un coordinatore BUSY non riesce a trovare
-     * nessun altro nodo a cui passare il testimone, evitando così un deadlock.
-     * DEVE essere chiamato all'interno di un blocco synchronized(electionStateLock).
-     */
-    private void resetSearchState() {
-        // Il lock è già stato acquisito dal chiamante (es. handleRequest)
-        isSearchingForStarter = false;
-        currentElectionId = null;
-        // NON tocchiamo isThisNodeAParticipant, perché non è rilevante per la ricerca.
-
-        System.out.println("LOG (Plant " + plant.getId() + "): 'Search for Starter' circuit has been reset.");
-
-        // NOTA: In questo caso specifico, la richiesta che ha fallito il "baton pass"
-        // NON è stata rimossa dalla coda. Quindi, al prossimo ciclo,
-        // il processore del coordinatore ci riproverà. Questo è il comportamento desiderato.
     }
 
 
@@ -991,30 +784,22 @@ public class NetManager {
     /**
      * Resetta lo stato relativo a una singola e specifica elezione.
      * Rimuove l'elezione dalla mappa delle elezioni attive.
-     * Questo metodo DEVE essere chiamato all'interno di un blocco synchronized(electionStateLock).
      *
      * @param requestId L'ID della richiesta la cui elezione è terminata.
      */
     private void resetElectionStateFor(String requestId) {
-        // Il lock è già stato acquisito dal metodo chiamante (es. handleElectionMessage)
 
         ElectionInfo removedElection = activeElections.remove(requestId);
 
         if (removedElection != null) {
             System.out.println("LOG (Plant " + plant.getId() + "): State for election '" + requestId + "' has been reset.");
         }
-        // Se è null, potrebbe essere già stato resettato da un altro thread, il che è ok.
 
-        // Controlliamo se ci sono altre elezioni attive. Se no, possiamo resettare
-        // anche i flag globali per sicurezza.
         if (activeElections.isEmpty()) {
-            this.isElectionRunning = false; // Non è più strettamente necessario, ma pulisce lo stato
-            this.currentElectionId = null;  // Anche questo per pulizia
+            this.isElectionRunning = false;
+            this.currentElectionId = null;
             System.out.println("LOG (Plant " + plant.getId() + "): No more active elections. Global state flags cleared.");
         } else {
-            // Ci sono ancora altre elezioni in corso. Dobbiamo decidere chi è il "current"
-            // Potremmo prendere il primo dalla mappa, ma per ora non è necessario
-            // fare nulla. La logica si basa sulla mappa, non più sul singolo `currentElectionId`.
             System.out.println("LOG (Plant " + plant.getId() + "): " + activeElections.size() + " other elections still active.");
         }
     }
@@ -1032,7 +817,6 @@ public class NetManager {
         Empty empty = Empty.newBuilder().build();
         WorkRequest request = arbiterClient.peekNextRequest(empty);
 
-        // Se è vuoto (nessuna richiesta in coda), avrai un oggetto "default"
         if (request.getRequestId().isEmpty()) {
             System.out.println("Attentione! Nessuna richiesta in coda.");
             return null;

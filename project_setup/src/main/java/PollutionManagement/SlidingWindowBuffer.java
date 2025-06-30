@@ -5,9 +5,8 @@ import Simulators.Measurement;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Locale; // Per la formattazione della stringa della media
 
-public class SlidingWindowBuffer implements Buffer { // Implementa la TUA interfaccia
+public class SlidingWindowBuffer implements Buffer {
     private final LinkedList<Measurement> measurementsWindow;
     private final List<Double> computedAverages;
     private final int windowSize = 8;
@@ -21,7 +20,7 @@ public class SlidingWindowBuffer implements Buffer { // Implementa la TUA interf
     }
 
     @Override
-    public void addMeasurement(Measurement m) { // Nome metodo corretto
+    public void addMeasurement(Measurement m) {
         synchronized (lock) {
             measurementsWindow.add(m);
 
@@ -42,26 +41,22 @@ public class SlidingWindowBuffer implements Buffer { // Implementa la TUA interf
         double sum = 0;
         // Considera le prime 'windowSize' misurazioni (le più vecchie nella finestra attuale)
         for (int i = 0; i < windowSize; i++) {
-            sum += measurementsWindow.get(i).getValue(); // Usa getValue() dal TUO Measurement
+            sum += measurementsWindow.get(i).getValue();
         }
 
         double average = sum / windowSize;
         computedAverages.add(average);
-        // System.out.println("Buffer: Computed average " + String.format(Locale.US, "%.2f", average) +
-        //                    " from " + windowSize + " measurements. Stored averages: " + computedAverages.size());
     }
 
     private void slideWindow() {
         // Chiamato da addMeasurement, quindi già sotto lock
         // Scarta i più vecchi 'elementsToDiscard'
-        if (measurementsWindow.size() >= windowSize) { // Assicurati di aver appena calcolato una media
+        if (measurementsWindow.size() >= windowSize) {
             for (int i = 0; i < elementsToDiscard; i++) {
                 if (!measurementsWindow.isEmpty()) {
                     measurementsWindow.removeFirst();
                 }
             }
-            // System.out.println("Buffer: Slid window. Discarded " + elementsToDiscard +
-            //                   ". New window size: " + measurementsWindow.size());
         }
     }
 
@@ -76,7 +71,6 @@ public class SlidingWindowBuffer implements Buffer { // Implementa la TUA interf
             }
             List<Double> averagesToSend = new ArrayList<>(computedAverages);
             computedAverages.clear();
-            // System.out.println("Buffer: Retrieved " + averagesToSend.size() + " averages for sending. Cleared averages list.");
             return averagesToSend;
         }
     }
@@ -84,18 +78,13 @@ public class SlidingWindowBuffer implements Buffer { // Implementa la TUA interf
     /**
      * Implementazione del metodo dell'interfaccia Buffer.
      * Restituisce le misurazioni grezze ATTUALMENTE nella finestra e pulisce la finestra.
-     * Come da specifica del progetto.
      */
     @Override
     public List<Measurement> readAllAndClean() {
         synchronized (lock) {
             List<Measurement> currentMeasurements = new ArrayList<>(measurementsWindow);
             measurementsWindow.clear();
-            // System.out.println("Buffer: readAllAndClean called. Returned " + currentMeasurements.size() +
-            //                   " raw measurements. Cleared raw measurements window.");
-            // Se readAllAndClean deve anche pulire le medie calcolate, aggiungilo qui.
-            // La specifica sembra implicare che questo metodo riguardi il buffer di misurazioni grezze.
-            // computedAverages.clear(); // Opzionale, dipende dall'interpretazione
+            // Pulisce tutto
             return currentMeasurements;
         }
     }

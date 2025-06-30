@@ -45,30 +45,8 @@ public class ClientAdmin {
         }
     }
 
-    public static ResponseEntity<ThermalPowerPlant[]> postRequest(String url, ThermalPowerPlant dummyPlants) {
-        try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-
-            HttpEntity<ThermalPowerPlant> request = new HttpEntity<>(dummyPlants, headers);
-            return restTemplate.postForEntity(url, request, ThermalPowerPlant[].class);
-        } catch (Exception e) {
-            System.out.println("Server not available: " + e.getMessage());
-            return new ResponseEntity<>(HttpStatus.SERVICE_UNAVAILABLE);
-        }
-    }
-
-    public static ResponseEntity<String> getRequest(String url) {
-        try {
-            return restTemplate.getForEntity(url, String.class);
-        } catch (Exception e) {
-            System.out.println("Server not available: " + e.getMessage());
-            return new ResponseEntity<>(HttpStatus.SERVICE_UNAVAILABLE);
-        }
-    }
-
     private static void listThermalPlants() {
-        String getPath = "/Administrator/getList"; // O il path corretto, es. /admin/plants
+        String getPath = "/Administrator/getList";
         try {
             ResponseEntity<String> response = restTemplate.getForEntity(serverAddress + getPath, String.class);
             System.out.println("Response Status: " + response.getStatusCode());
@@ -101,7 +79,6 @@ public class ClientAdmin {
         System.out.println("Fetching pollution statistics from: " + fullPath);
 
         try {
-            // Se vuoi deserializzare in un oggetto specifico:
             ResponseEntity<PollutionStatsResponse> response = restTemplate.getForEntity(fullPath, PollutionStatsResponse.class);
             System.out.println("Response Status: " + response.getStatusCode());
             if (response.getBody() != null) {
@@ -111,11 +88,6 @@ public class ClientAdmin {
             } else {
                 System.out.println("No statistics found or empty response body.");
             }
-
-            // Se preferisci ricevere come Stringa e stamparla:
-            // ResponseEntity<String> response = restTemplate.getForEntity(fullPath, String.class);
-            // System.out.println("Response Status: " + response.getStatusCode());
-            // System.out.println("Response Body:\n" + response.getBody());
 
         } catch (Exception e) {
             System.err.println("An unexpected error occurred: " + e.getMessage());

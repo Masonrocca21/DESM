@@ -11,7 +11,6 @@ service PlantService {
     rpc SendElection (ElectionMessage) returns (Ack);
     rpc SendElected (ElectedMessage) returns (Ack);
     rpc AnnouncePresence(PlantInfoMessage) returns (Ack);
-    rpc PassElectionBaton(BatonMessage) returns (Ack);
 }
 
 message PlantInfoMessage {
@@ -50,10 +49,4 @@ message ElectedMessage {
     double winnerValue = 2;
     string currentElectionRequestId = 3;
     double requiredKwh = 4;
-}
-
-message BatonMessage {
-    string request_id = 1;      // L'ID della richiesta di energia
-    double kwh = 2;             // L'energia richiesta
-    repeated int32 visited_nodes_ids = 3;   // L'ID di chi ha INIZIATO il passaggio (per evitare loop)
 }
